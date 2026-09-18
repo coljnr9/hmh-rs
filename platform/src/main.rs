@@ -1,15 +1,17 @@
 use std::{
-    alloc::{Layout, alloc_zeroed},
     cmp::min,
     env,
-    fs::{self, File},
-    os::fd::AsFd,
+    ffi::c_void,
+    fs::{self, File, OpenOptions},
+    io::{ErrorKind, Read, Seek, SeekFrom, Write},
+    os::fd::{AsFd, OwnedFd},
     path::PathBuf,
     time::{Duration, Instant, SystemTime},
 };
 
 use alsa::{
-    Direction, PCM,
+    Direction::{self, Playback},
+    PCM,
     pcm::{self, HwParams},
 };
 use anyhow::{Context, Result, bail};
@@ -18,6 +20,8 @@ use memmap2::MmapMut;
 use rustix::{
     fs::{MemfdFlags, Mode, OFlags, memfd_create},
     io::Errno,
+    mm::{MapFlags, ProtFlags, mmap_anonymous},
+    net::eth::PRP,
 };
 use shared::{
     AudioBuffer, AudioBufferRaw, GameAudioRenderFn, GameInput, GameMemory, GameUpdateAndRenderFn,
@@ -56,6 +60,12 @@ use wayland_protocols::xdg::shell::client::{
 const KILOBYTE: usize = 1024;
 const MEGABYTE: usize = 1024 * KILOBYTE;
 const GIGABYTE: usize = 1024 * MEGABYTE;
+const TERABYTE: usize = 1024 * GIGABYTE;
+#[cfg(debug_assertions)]
+const BASE_ADDRESS: usize = 2 * TERABYTE;
+#[cfg(not(debug_assertions))]
+const BASE_ADDRESS: usize = 0;
+
 const DEFAULT_WINDOW_WIDTH: usize = 1920;
 const DEFAULT_WINDOW_HEIGHT: usize = 1080;
 
@@ -80,7 +90,8 @@ const SPACE_KEY_CODE: u32 = 57;
 const ESC_KEY_CODE: u32 = 1;
 
 const HOT_RELOAD_KEYCODE: u32 = 27 - 8;
-const GAME_LIB_PATH: &'static str = "target/release/libgame.so";
+const RECORD_HOTKEY: u32 = 29 - 8; // y
+const GAME_LIB_PATH: &str = "target/release/libgame.so";
 
 // Positionally map from GAmeButtonId to the keycode
 const KEYBOARD_MAPPING: [u32; shared::NUM_BUTTONS] = [
@@ -99,7 +110,7 @@ const KEYBOARD_MAPPING: [u32; shared::NUM_BUTTONS] = [
 ];
 const ALSA_CHANNELS: u32 = 2;
 const ALSA_SAMPLE_RATE: u32 = 48_000;
-const LATENCY_TARGET_FRAMES: u32 = ALSA_SAMPLE_RATE / 10;
+const LATENCY_TARGET_FRAMES: u32 = ALSA_SAMPLE_RATE / 1;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum RegionState {
@@ -185,10 +196,6 @@ fn update_keyboard_input(
     };
 }
 
-fn debug_sync_display(_buffer: &mut [u8]) {
-    // Draw to visualize the audio buffer stuff
-}
-
 struct Proxies {
     connection: Connection,
     wl_compositor: WlCompositor,
@@ -217,6 +224,15 @@ struct Inbox {
     reload_requested: bool,
 }
 
+#[derive(PartialEq, Eq)]
+enum PlaybackState {
+    Recording(usize),
+    Playing(usize),
+    RecordInit,
+    PlaybackInit,
+    Idle,
+}
+
 struct AppData {
     proxies: Proxies,
     memory: Memory,
@@ -227,6 +243,8 @@ struct AppData {
     window_height_pixels: usize,
     monitor_refresh_hz: i32,
     controller: GameInput,
+    playback_state: PlaybackState,
+    recording_file: Option<File>,
 }
 
 impl AppData {}
@@ -387,6 +405,34 @@ impl Dispatch<WlKeyboard, ()> for AppData {
                 state.inbox.reload_requested = true;
                 //  I think this means "R" is not available in the game at all. PRobaly change this
                 //  to a modifier or something
+            }
+            wl_keyboard::Event::Key {
+                key: RECORD_HOTKEY,
+                state: WEnum::Value(KeyState::Pressed),
+                ..
+            } => {
+                info!("Got 'Y'");
+                if state.playback_state == PlaybackState::Idle {
+                    state.recording_file = Some(
+                        OpenOptions::new()
+                            .write(true)
+                            .create(true)
+                            .read(true)
+                            .truncate(true)
+                            .open("recording.bin")
+                            .unwrap(),
+                    );
+                    state.playback_state = PlaybackState::RecordInit;
+                } else if state.playback_state == PlaybackState::Recording(0) {
+                    state.playback_state = PlaybackState::PlaybackInit;
+                } else if state.playback_state == PlaybackState::Playing(0) {
+                    for button in &mut state.controller.buttons {
+                        button.ended_down = false;
+                    }
+                    state.controller.clear_half_transition_count();
+
+                    state.playback_state = PlaybackState::Idle;
+                }
             }
             wl_keyboard::Event::Key {
                 key,
@@ -584,6 +630,8 @@ fn main() -> Result<()> {
         window_height_pixels: DEFAULT_WINDOW_HEIGHT,
         controller: GameInput::default(),
         monitor_refresh_hz: 60,
+        playback_state: PlaybackState::Idle,
+        recording_file: None,
     };
 
     app.proxies.wl_surface.commit();
@@ -606,22 +654,32 @@ fn main() -> Result<()> {
     let (alsa_capacity_frames, _alsa_period_frames) = pcm.get_params()?;
 
     // Platform <-> game interaction assumes a zeroed, aligned memory block.
-    let permanent_ptr = unsafe {
-        let layout = Layout::from_size_align(64 * MEGABYTE, 4096)?;
-        let permanent_ptr = alloc_zeroed(layout);
-        if permanent_ptr.is_null() {
-            panic!("Allocation failed");
-        }
-        permanent_ptr
-    };
+    let permanent_size = 64 * MEGABYTE;
+    let transient_size = 256 * MEGABYTE;
+    let total_size = permanent_size + transient_size;
 
-    let mut transient = vec![0u8; 256 * MEGABYTE];
+    let flags = if BASE_ADDRESS != 0 {
+        MapFlags::FIXED_NOREPLACE
+    } else {
+        MapFlags::empty()
+    };
+    let flags = MapFlags::PRIVATE | flags;
+
+    let base = unsafe {
+        mmap_anonymous(
+            BASE_ADDRESS as *mut c_void,
+            total_size,
+            ProtFlags::READ | ProtFlags::WRITE,
+            flags,
+        )?
+    } as *mut u8;
+    info!("Game memory at {:p}", base);
     let mut game_memory = GameMemory {
         is_initialized: false,
-        permanent: permanent_ptr,
-        permanent_size: 64 * MEGABYTE,
-        transient: transient.as_mut_ptr(),
-        transient_size: transient.len(),
+        permanent: base,
+        permanent_size,
+        transient: unsafe { base.add(permanent_size) },
+        transient_size,
     };
     let mut loop_start = Instant::now();
     let mut loop_end: Instant;
@@ -629,7 +687,7 @@ fn main() -> Result<()> {
     let mut queued_window = [0usize; 32];
     let mut idx = 0;
     let mut generation_id = 0;
-    let mut game_code = load("target/release/libgame.so", generation_id)?;
+    let mut game_code = load(GAME_LIB_PATH, generation_id)?;
     let mut last_mtime = fs::metadata(GAME_LIB_PATH)?.modified()?;
     let mut need_reload = false;
     loop {
@@ -748,11 +806,36 @@ fn main() -> Result<()> {
                 height_pixels: app.window_height_pixels,
                 pitch_bytes: POOL_STRIDE_BYTES,
                 bytes_per_pixel: BYTES_PER_PIXEL,
+                pitch_pixels: POOL_STRIDE_BYTES / BYTES_PER_PIXEL,
             };
 
             let _platform_api = PlatformApi;
             // Get new frame content
             let mut graphics_buffer_raw = graphics_buffer.to_raw();
+            match app.playback_state {
+                PlaybackState::RecordInit => {
+                    info!("Initializing recording");
+                    record_game_memory(&mut app.recording_file, &game_memory)?;
+                    record_input(&mut app.recording_file, &app.controller)?;
+                    app.playback_state = PlaybackState::Recording(0);
+                }
+                PlaybackState::Recording(i) => {
+                    record_input(&mut app.recording_file, &app.controller)?;
+                }
+                PlaybackState::PlaybackInit => {
+                    info!("Initializing playback");
+                    if let Some(f) = &mut app.recording_file {
+                        f.seek(SeekFrom::Start(0))?;
+                    }
+                    read_game_memory(&mut app.recording_file, &mut game_memory)?;
+                    app.controller = playback_input(&mut app.recording_file, &mut game_memory)?;
+                    app.playback_state = PlaybackState::Playing(0);
+                }
+                PlaybackState::Playing(i) => {
+                    app.controller = playback_input(&mut app.recording_file, &mut game_memory)?;
+                }
+                PlaybackState::Idle => {}
+            }
             unsafe {
                 (game_code.update_and_render)(
                     &mut game_memory,
@@ -792,6 +875,7 @@ fn main() -> Result<()> {
     }
 }
 
+#[allow(unused)]
 fn draw_audio_debug(
     graphics_buffer: &mut GraphicsBuffer,
     written_window: [usize; 32],
@@ -825,6 +909,7 @@ fn draw_audio_debug(
     }
 }
 
+#[allow(unused)]
 fn draw_vertical(
     graphics_buffer: &mut GraphicsBuffer,
     x: usize,
@@ -923,4 +1008,50 @@ fn load(path: impl Into<PathBuf>, generation_id: u64) -> Result<GameCode> {
         update_and_render: update_and_render_symbol,
         audio_render: audio_render_symbol,
     })
+}
+
+fn record_input(file: &mut Option<File>, input: &GameInput) -> Result<()> {
+    if let Some(file) = file {
+        file.write_all(input.as_bytes_unsafe())?;
+    }
+
+    Ok(())
+}
+
+fn playback_input(file: &mut Option<File>, memory: &mut GameMemory) -> Result<GameInput> {
+    match file {
+        Some(file) => {
+            let mut buf = [0u8; size_of::<GameInput>()];
+            match file.read_exact(&mut buf) {
+                Ok(_) => Ok(GameInput::from_bytes_unsafe(&buf)),
+                Err(e) if e.kind() == ErrorKind::UnexpectedEof => {
+                    file.seek(SeekFrom::Start(0))?;
+                    memory.read_from(file)?;
+                    Ok(GameInput::from_bytes_unsafe(&buf))
+                }
+                Err(e) => {
+                    bail!("Unexpected error: {:?}", e);
+                }
+            }
+        }
+        None => bail!("Playback file was unavailable"),
+    }
+}
+
+fn record_game_memory(file: &mut Option<File>, memory: &GameMemory) -> Result<()> {
+    if let Some(file) = file {
+        memory.write_to(file)?;
+    }
+
+    Ok(())
+}
+
+fn read_game_memory(file: &mut Option<File>, memory: &mut GameMemory) -> Result<()> {
+    match file {
+        Some(file) => {
+            memory.read_from(file)?;
+        }
+        None => bail!("Memory file was unavailable"),
+    }
+    Ok(())
 }

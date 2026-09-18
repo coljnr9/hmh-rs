@@ -1,3 +1,9 @@
+use anyhow::Result;
+use std::{
+    io::{Read, Write},
+    mem::transmute,
+};
+
 pub const NUM_BUTTONS: usize = 12;
 
 // Authoritative ordering for arrays of input codes
@@ -28,7 +34,7 @@ pub struct GameButtonState {
     pub ended_down: bool,
 }
 
-#[derive(Default)]
+#[derive(Debug, Default, Copy, Clone)]
 #[repr(C)]
 pub struct GameInput {
     pub buttons: [GameButtonState; NUM_BUTTONS],
@@ -40,7 +46,21 @@ impl GameInput {
             key.half_transition_count = 0;
         }
     }
+    pub fn as_bytes_unsafe(&self) -> &[u8] {
+        unsafe {
+            std::slice::from_raw_parts(
+                self as *const GameInput as *const u8,
+                std::mem::size_of::<GameInput>(),
+            )
+        }
+    }
+
+    pub fn from_bytes_unsafe(bytes: &[u8]) -> Self {
+        assert!(bytes.len() >= size_of::<Self>());
+        unsafe { std::ptr::read_unaligned(bytes.as_ptr() as *const Self) }
+    }
 }
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct GraphicsBufferRaw {
@@ -50,6 +70,7 @@ pub struct GraphicsBufferRaw {
     pub height_pixels: usize,
     pub pitch_bytes: usize,
     pub bytes_per_pixel: usize,
+    pub pitch_pixels: usize,
 }
 
 pub struct GraphicsBuffer<'a> {
@@ -57,6 +78,7 @@ pub struct GraphicsBuffer<'a> {
     pub width_pixels: usize,
     pub height_pixels: usize,
     pub pitch_bytes: usize,
+    pub pitch_pixels: usize,
     pub bytes_per_pixel: usize,
 }
 
@@ -72,6 +94,7 @@ impl<'a> GraphicsBuffer<'a> {
             height_pixels: raw.height_pixels,
             pitch_bytes: raw.pitch_bytes,
             bytes_per_pixel: raw.bytes_per_pixel,
+            pitch_pixels: raw.pitch_pixels,
         }
     }
 
@@ -82,6 +105,7 @@ impl<'a> GraphicsBuffer<'a> {
             height_pixels: self.height_pixels,
             pitch_bytes: self.pitch_bytes,
             bytes_per_pixel: self.bytes_per_pixel,
+            pitch_pixels: self.pitch_pixels,
         }
     }
 }
@@ -127,6 +151,27 @@ pub struct GameMemory {
     pub permanent_size: usize,
     pub transient: *mut u8, // length = transient_size
     pub transient_size: usize,
+}
+
+impl GameMemory {
+    pub fn write_to(&self, w: &mut impl Write) -> Result<()> {
+        let bytes = unsafe {
+            std::slice::from_raw_parts(self.permanent, self.permanent_size + self.transient_size)
+        };
+        w.write_all(bytes)?;
+        Ok(())
+    }
+
+    pub fn read_from(&mut self, r: &mut impl Read) -> Result<()> {
+        let bytes = unsafe {
+            std::slice::from_raw_parts_mut(
+                self.permanent,
+                self.permanent_size + self.transient_size,
+            )
+        };
+        r.read_exact(bytes)?;
+        Ok(())
+    }
 }
 
 #[repr(C)]
