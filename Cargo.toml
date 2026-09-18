@@ -1,0 +1,3 @@
+[workspace]
+members = ["platform", "game", "shared"]
+resolver = "3"

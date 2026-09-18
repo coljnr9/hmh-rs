@@ -1,0 +1,17 @@
+[package]
+name = "platform"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+alsa = "0.12.1"
+anyhow = "1.0.104"
+bytemuck = "1.25.2"
+memmap2 = "0.9.11"
+rustix = { version = "1.1.4", features = ["alloc", "std", "fs"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+wayland-client = "0.31.15"
+wayland-protocols = { version = "0.32.13", features = ["client"] }
+shared = {path = "../shared"}
+libloading = "0.8"

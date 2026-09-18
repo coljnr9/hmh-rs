@@ -1,0 +1,4 @@
+default_job = "game"
+
+[jobs.game]
+command = ["cargo", "build", "-p", "game", "--release"]

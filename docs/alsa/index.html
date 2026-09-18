@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="A navigable field guide to ALSA PCM: learn digital audio, play your first frames, and search the original C API reference.">
+  <title>ALSA PCM · A field guide</title>
+  <link rel="icon" href="assets/mark.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="style.css">
+  <script src="data.js" defer></script>
+  <script src="guides.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="topbar">
+    <button id="menu-toggle" class="icon-button mobile-menu" aria-label="Toggle navigation" aria-expanded="false" aria-controls="sidebar">☰</button>
+    <a class="brand" href="#/guide/welcome"><img src="assets/mark.svg" alt="" width="29" height="29">ALSA<span class="brand-divider">/</span><span class="brand-sub">field guide</span></a>
+    <span class="library-label">alsa-lib <span>PCM</span></span>
+    <button id="search-open" class="search-trigger"><span>⌕</span> Search docs, functions, concepts… <kbd>Ctrl K</kbd></button>
+    <a class="upstream" href="https://www.alsa-project.org/alsa-doc/alsa-lib/pcm.html">Upstream docs ↗</a>
+    <button id="theme-toggle" class="icon-button" aria-label="Switch color theme">◐</button>
+  </header>
+  <aside id="sidebar" class="sidebar" aria-label="Documentation navigation">
+    <div class="sidebar-intro"><span class="eyebrow">THE PCM INTERFACE</span><p>Linux audio, explained.</p></div>
+    <nav id="navigation"></nav>
+    <div class="sidebar-footer"><span class="status-dot"></span> Local documentation snapshot<br><span id="snapshot-date"></span></div>
+  </aside>
+  <div id="page" class="page">
+    <main id="main" tabindex="-1"></main>
+    <aside class="toc" aria-label="On this page"><div class="eyebrow">ON THIS PAGE</div><nav id="toc-links"></nav><div class="toc-note">An independent reading experience.<br>Built on the ALSA project’s documentation.</div></aside>
+  </div>
+  <dialog id="search-dialog" aria-label="Search documentation">
+    <div class="search-input-row"><span aria-hidden="true">⌕</span><input id="search-input" type="search" placeholder="Search a function, concept, or error…" aria-label="Search documentation" autocomplete="off"><button id="search-close" aria-label="Close search">Esc</button></div>
+    <div id="search-status" class="search-status" role="status"></div>
+    <div id="search-results" class="search-results"></div>
+    <div class="search-footer"><span><kbd>↓</kbd> <kbd>↑</kbd> navigate <kbd>Enter</kbd> open</span><span>Searches guides + upstream reference</span></div>
+  </dialog>
+  <noscript><p class="noscript">This reader needs JavaScript. <a href="https://www.alsa-project.org/alsa-doc/alsa-lib/pcm.html">Read the original ALSA documentation instead.</a></p></noscript>
+</body>
+</html>
