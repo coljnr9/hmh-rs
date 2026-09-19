@@ -1,5 +1,6 @@
 use anyhow::Result;
 use std::f32::consts;
+use tracing::info;
 
 use shared::{
     AudioBuffer, AudioBufferRaw, GameButtonId, GameInput, GameMemory, GraphicsBuffer,
@@ -20,7 +21,12 @@ pub struct GameState {
     player_y: i64,
 }
 
-fn render_player(graphics_buffer: &mut GraphicsBuffer, player_x: i64, player_y: i64) {
+fn render_player(
+    graphics_buffer: &mut GraphicsBuffer,
+    player_x: i64,
+    player_y: i64,
+    color: [u8; 4],
+) {
     let player_h = 50;
     let player_w = 50;
     let _top = player_y;
@@ -33,7 +39,7 @@ fn render_player(graphics_buffer: &mut GraphicsBuffer, player_x: i64, player_y: 
     for row in rows {
         row[player_x as usize..(player_x + player_w) as usize]
             .iter_mut()
-            .for_each(|p| *p = u32::from_be_bytes([0, 255, 0, 0]));
+            .for_each(|p| *p = u32::from_be_bytes(color));
     }
 }
 pub fn game_update_and_render_internal(
@@ -75,7 +81,22 @@ pub fn game_update_and_render_internal(
             ]);
         }
     }
-    render_player(graphics_buffer, game_state.player_x, game_state.player_y);
+
+    let x = game_input.pointer.x;
+    let y = game_input.pointer.y;
+    game_state.player_x = x as i64;
+    game_state.player_y = y as i64;
+    let color = if game_input.pointer.buttons[0].ended_down {
+        [0, 255, 0, 0]
+    } else {
+        [0, 0, 255, 0]
+    };
+    render_player(
+        graphics_buffer,
+        game_state.player_x,
+        game_state.player_y,
+        color,
+    );
 
     Ok(())
 }

@@ -5,6 +5,7 @@ use std::{
 };
 
 pub const NUM_BUTTONS: usize = 12;
+pub const NUM_POINTER_BUTTONS: usize = 2;
 
 // Authoritative ordering for arrays of input codes
 #[derive(Clone, Copy)]
@@ -62,12 +63,34 @@ pub struct GameButtonState {
 #[repr(C)]
 pub struct GameInput {
     pub buttons: [GameButtonState; NUM_BUTTONS],
+    pub pointer: Pointer,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+#[repr(C)]
+pub struct PointerButtonState {
+    serial: u32,
+    button: u32,
+    pub ended_down: bool,
+    pub half_transition_count: usize,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+#[repr(C)]
+pub struct Pointer {
+    pub x: f64,
+    pub y: f64,
+    pub buttons: [PointerButtonState; NUM_POINTER_BUTTONS],
 }
 
 impl GameInput {
     pub fn clear_half_transition_count(&mut self) {
         for key in &mut self.buttons {
             key.half_transition_count = 0;
+        }
+
+        for button in &mut self.pointer.buttons {
+            button.half_transition_count = 0;
         }
     }
     pub fn as_bytes_unsafe(&self) -> &[u8] {

@@ -91,6 +91,9 @@ const ESC_KEY_CODE: u32 = 1;
 
 const HOT_RELOAD_KEYCODE: u32 = 27 - 8;
 const RECORD_HOTKEY: u32 = 29 - 8; // y
+const LEFT_KEYCODE: u32 = 272;
+const RIGHT_KEYCODE: u32 = 273;
+
 const GAME_LIB_NAME: &str = "libgame.so";
 const RECORDING_FILE_NAME: &str = "recording.hmi";
 const KEYBOARD_MAPPING: [u32; shared::NUM_BUTTONS] = [
@@ -107,6 +110,9 @@ const KEYBOARD_MAPPING: [u32; shared::NUM_BUTTONS] = [
     SPACE_KEY_CODE,
     ESC_KEY_CODE,
 ];
+
+const PONTER_BUTTON_MAPPING: [u32; shared::NUM_POINTER_BUTTONS] = [LEFT_KEYCODE, RIGHT_KEYCODE];
+
 const ALSA_CHANNELS: u32 = 2;
 const ALSA_SAMPLE_RATE: u32 = 48_000;
 const LATENCY_TARGET_FRAMES: u32 = ALSA_SAMPLE_RATE;
@@ -193,6 +199,19 @@ fn update_keyboard_input(
         .position(|&k| k == incoming_key_code)
     {
         let button = &mut keyboard_controller.buttons[button_idx];
+        if button.ended_down != is_down {
+            button.half_transition_count += 1;
+        }
+        button.ended_down = is_down;
+    };
+}
+
+fn update_pointer_input(controller: &mut GameInput, incoming_button_code: u32, is_down: bool) {
+    if let Some(b_idx) = PONTER_BUTTON_MAPPING
+        .iter()
+        .position(|&b| b == incoming_button_code)
+    {
+        let button = &mut controller.pointer.buttons[b_idx];
         if button.ended_down != is_down {
             button.half_transition_count += 1;
         }
@@ -415,7 +434,6 @@ impl Dispatch<WlKeyboard, ()> for AppData {
                 state: WEnum::Value(KeyState::Pressed),
                 ..
             } => {
-                info!("Got 'Y'");
                 let execution_dir = get_executable_parent_dir().unwrap();
                 let recording_file_path = execution_dir.join(RECORDING_FILE_NAME);
                 if state.playback_state == PlaybackState::Idle {
@@ -453,7 +471,6 @@ impl Dispatch<WlKeyboard, ()> for AppData {
                 surface: _,
                 keys,
             } => {
-                info!(keys = ?keys, "got wl_keyboard enter");
                 let keys = keys
                     .as_chunks::<4>()
                     .0
@@ -476,7 +493,7 @@ impl Dispatch<WlKeyboard, ()> for AppData {
 
 impl Dispatch<WlPointer, ()> for AppData {
     fn event(
-        _state: &mut Self,
+        app_data: &mut Self,
         _proxy: &WlPointer,
         event: <WlPointer as wayland_client::Proxy>::Event,
         _data: &(),
@@ -487,10 +504,28 @@ impl Dispatch<WlPointer, ()> for AppData {
             wl_pointer::Event::Enter {
                 serial,
                 surface,
-                surface_x: _,
-                surface_y: _,
+                surface_x,
+                surface_y,
             } => {
-                debug!(serial = serial, surface = ?surface, "Got enter event");
+                app_data.controller.pointer.x = surface_x;
+                app_data.controller.pointer.y = surface_y;
+            }
+            wl_pointer::Event::Motion {
+                time,
+                surface_x,
+                surface_y,
+            } => {
+                app_data.controller.pointer.x = surface_x;
+                app_data.controller.pointer.y = surface_y;
+            }
+            wl_pointer::Event::Button {
+                serial,
+                time,
+                button,
+                state: WEnum::Value(state),
+            } => {
+                let is_down = state == wl_pointer::ButtonState::Pressed;
+                update_pointer_input(&mut app_data.controller, button, is_down);
             }
             wl_pointer::Event::Leave { serial, surface } => {
                 debug!(serial = serial, surface = ?surface, "Got leave event")
