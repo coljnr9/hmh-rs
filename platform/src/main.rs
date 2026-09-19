@@ -26,7 +26,7 @@ use shared::{
     AudioBuffer, AudioBufferRaw, GameAudioRenderFn, GameInput, GameMemory, GameUpdateAndRenderFn,
     GraphicsBuffer, GraphicsBufferRaw, PlatformApi,
 };
-use tracing::{debug, debug_span, error, info, instrument};
+use tracing::{debug, debug_span, error, info};
 use tracing_subscriber::{EnvFilter, fmt::format::FmtSpan};
 use wayland_client::{
     Connection, Dispatch, QueueHandle, WEnum,
@@ -549,7 +549,6 @@ pub(crate) fn platform_write_entire_file(file_name: &str, data: &[u8]) -> Result
     Ok(())
 }
 
-#[instrument]
 fn main() -> Result<()> {
     let logging_env_filter = EnvFilter::builder()
         .with_default_directive(tracing_subscriber::filter::LevelFilter::INFO.into())
@@ -659,6 +658,7 @@ fn main() -> Result<()> {
         playback_state: PlaybackState::Idle,
         inputs_recording_file: None,
     };
+    app.controller.dt = 1.0 / 240.0;
 
     app.proxies.wl_surface.commit();
     event_queue.roundtrip(&mut app)?;
@@ -716,7 +716,7 @@ fn main() -> Result<()> {
     };
 
     // Just touch the game memory so that our in-game load doesn't have a slow first execution.
-    read_game_memory(&mut game_memory_buffer, &mut game_memory)?;
+    load_game_memory(&mut game_memory_buffer, &mut game_memory)?;
     let mut loop_start = Instant::now();
     let mut loop_end: Instant;
     let mut generation_id = 0;
@@ -828,7 +828,6 @@ fn main() -> Result<()> {
                 qh,
             );
         }
-
         slot.state = RegionState::Busy;
 
         let graphics_buffer = GraphicsBuffer {
@@ -843,25 +842,23 @@ fn main() -> Result<()> {
 
         let _platform_api = PlatformApi;
 
-        let mut graphics_buffer_raw = graphics_buffer.to_raw();
-
         match app.playback_state {
             PlaybackState::RecordInit => {
                 info!("Initializing recording");
-                record_game_memory(&mut game_memory_buffer, &game_memory)?;
-                record_input(&mut app.inputs_recording_file, &app.controller)?;
+                dump_game_memory(&mut game_memory_buffer, &game_memory)?;
+                save_inputs(&mut app.inputs_recording_file, &app.controller)?;
                 app.playback_state = PlaybackState::Recording(0);
             }
             PlaybackState::Recording(_i) => {
-                record_input(&mut app.inputs_recording_file, &app.controller)?;
+                save_inputs(&mut app.inputs_recording_file, &app.controller)?;
             }
             PlaybackState::PlaybackInit => {
                 info!("Initializing playback");
-                read_game_memory(&mut game_memory_buffer, &mut game_memory)?;
+                load_game_memory(&mut game_memory_buffer, &mut game_memory)?;
                 if let Some(f) = &mut app.inputs_recording_file {
                     f.seek(SeekFrom::Start(0))?;
                 }
-                app.controller = playback_input(
+                app.controller = load_inputs(
                     &mut game_memory_buffer,
                     &mut app.inputs_recording_file,
                     &mut game_memory,
@@ -869,7 +866,7 @@ fn main() -> Result<()> {
                 app.playback_state = PlaybackState::Playing(0);
             }
             PlaybackState::Playing(_i) => {
-                app.controller = playback_input(
+                app.controller = load_inputs(
                     &mut game_memory_buffer,
                     &mut app.inputs_recording_file,
                     &mut game_memory,
@@ -883,7 +880,7 @@ fn main() -> Result<()> {
             (game_code.update_and_render)(
                 &mut game_memory,
                 &app.controller,
-                &mut graphics_buffer_raw,
+                &mut graphics_buffer.to_raw(),
             );
         }
 
@@ -1042,8 +1039,7 @@ fn load(path: impl Into<PathBuf>, generation_id: u64) -> Result<GameCode> {
     })
 }
 
-#[instrument]
-fn record_input(file: &mut Option<File>, input: &GameInput) -> Result<()> {
+fn save_inputs(file: &mut Option<File>, input: &GameInput) -> Result<()> {
     if let Some(file) = file {
         file.write_all(input.as_bytes_unsafe())?;
     }
@@ -1051,8 +1047,7 @@ fn record_input(file: &mut Option<File>, input: &GameInput) -> Result<()> {
     Ok(())
 }
 
-#[instrument]
-fn playback_input(
+fn load_inputs(
     memory_file: &mut MmapMut,
     inputs_file: &mut Option<File>,
     memory: &mut GameMemory,
@@ -1065,7 +1060,7 @@ fn playback_input(
                 Err(e) if e.kind() == ErrorKind::UnexpectedEof => {
                     inputs_file.seek(SeekFrom::Start(0))?;
 
-                    read_game_memory(memory_file, memory)?;
+                    load_game_memory(memory_file, memory)?;
                     inputs_file.read_exact(&mut buf)?;
                     Ok(GameInput::from_bytes_unsafe(&buf))
                 }
@@ -1078,16 +1073,14 @@ fn playback_input(
     }
 }
 
-#[instrument]
-fn record_game_memory(file: &mut MmapMut, memory: &GameMemory) -> Result<()> {
+fn dump_game_memory(file: &mut MmapMut, memory: &GameMemory) -> Result<()> {
     let mut dst: &mut [u8] = &mut file[..];
     memory.write_to(&mut dst)?;
 
     Ok(())
 }
 
-#[instrument]
-fn read_game_memory(game_memory_file: &mut MmapMut, memory: &mut GameMemory) -> Result<()> {
+fn load_game_memory(game_memory_file: &mut MmapMut, memory: &mut GameMemory) -> Result<()> {
     let src: &[u8] = &game_memory_file[..];
     memory.read_from(src).context("reading game memory")?;
 

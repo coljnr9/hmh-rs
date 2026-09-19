@@ -1,72 +1,28 @@
 use anyhow::Result;
-use std::f32::consts;
+use std::f64::consts;
 
 use shared::{
     AudioBuffer, AudioBufferRaw, GameButtonId, GameInput, GameMemory, GraphicsBuffer,
     GraphicsBufferRaw, PlatformApi,
 };
 
-// TODO(coljnr9): We probably want this in a place that doesn't get zeroed on hot-reload
-
 #[repr(C)]
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct GameState {
     x_offset: i64,
     y_offset: i64,
     // Temporarily used to track sine-wave angle between audio calls
-    theta: f32,
+    theta: f64,
 
-    player_x: i64,
-    player_y: i64,
+    player_x: f64,
+    player_y: f64,
 }
 
-fn render_player(
-    graphics_buffer: &mut GraphicsBuffer,
-    player_x: i64,
-    player_y: i64,
-    color: [u8; 4],
-) {
-    let player_h = 50;
-    let player_w = 50;
-    let _top = player_y;
-    let _bottom = player_y + 10;
-    let rows = &mut bytemuck::cast_slice_mut::<u8, u32>(graphics_buffer.pixels)[player_y as usize
-        * graphics_buffer.pitch_pixels
-        ..(player_y + player_h) as usize * graphics_buffer.pitch_pixels]
-        .chunks_mut(graphics_buffer.pitch_pixels);
-
-    for row in rows {
-        row[player_x as usize..(player_x + player_w) as usize]
-            .iter_mut()
-            .for_each(|p| *p = u32::from_be_bytes(color));
-    }
-}
-pub fn game_update_and_render_internal(
+fn render_weird_gradient(
     game_state: &mut GameState,
     graphics_buffer: &mut GraphicsBuffer,
     game_input: &GameInput,
-    _platform_api: &PlatformApi,
-) -> Result<()> {
-    game_state.x_offset += 1;
-    if game_input.buttons[GameButtonId::Left].ended_down {
-        game_state.player_x -= 1;
-    }
-    if game_input.buttons[GameButtonId::Right].ended_down {
-        game_state.player_x += 1;
-    }
-    if game_input.buttons[GameButtonId::Up].ended_down {
-        game_state.player_y -= 1;
-    }
-    if game_input.buttons[GameButtonId::Down].ended_down {
-        let new_y = game_state.player_y + 1;
-        if (new_y as usize) < graphics_buffer.height_pixels {
-            game_state.player_y = new_y;
-        }
-    }
-    if game_input.buttons[GameButtonId::ActionUp].ended_down {
-        game_state.player_y -= 30;
-    }
-
+) {
     let rows = bytemuck::cast_slice_mut::<u8, u32>(graphics_buffer.pixels)
         .chunks_mut(graphics_buffer.pitch_bytes / 4);
 
@@ -80,26 +36,189 @@ pub fn game_update_and_render_internal(
             ]);
         }
     }
+}
+fn draw_rectangle(
+    graphics_buffer: &mut GraphicsBuffer,
+    min_x: f64,
+    min_y: f64,
+    max_x: f64,
+    max_y: f64,
+    red: f64,
+    green: f64,
+    blue: f64,
+) {
+    // TODO(coljnr9) Want to assert that mins are <= maxes?
 
-    let x = game_input.pointer.x;
-    let y = game_input.pointer.y;
-    game_state.player_x = x as i64;
-    game_state.player_y = y as i64;
-    let color = if game_input.pointer.buttons[0].ended_down {
-        [0, 255, 0, 0]
-    } else {
-        [0, 0, 255, 0]
+    let min_x = min_x
+        .clamp(0.0, graphics_buffer.width_pixels as f64)
+        .round() as usize;
+    let max_x = max_x
+        .clamp(0.0, graphics_buffer.width_pixels as f64)
+        .round() as usize;
+    let min_y = min_y
+        .clamp(0.0, graphics_buffer.height_pixels as f64)
+        .round() as usize;
+    let max_y = max_y
+        .clamp(0.0, graphics_buffer.height_pixels as f64)
+        .round() as usize;
+
+    let rows = &mut bytemuck::cast_slice_mut::<u8, u32>(graphics_buffer.pixels)
+        [min_y * graphics_buffer.pitch_pixels..(max_y) * graphics_buffer.pitch_pixels]
+        .chunks_mut(graphics_buffer.pitch_pixels);
+
+    let color = u32::from_be_bytes([
+        255,
+        (red * 255.0).round() as u8,
+        (green * 255.0).round() as u8,
+        (blue * 255.0).round() as u8,
+    ]);
+
+    for row in rows {
+        row[min_x..(max_x)].iter_mut().for_each(|p| *p = color);
+    }
+}
+
+pub fn game_update_and_render_internal(
+    game_state: &mut GameState,
+    graphics_buffer: &mut GraphicsBuffer,
+    game_input: &GameInput,
+    _platform_api: &PlatformApi,
+) -> Result<()> {
+    let mut player_x_delta = 0.0;
+    let mut player_y_delta = 0.0;
+
+    if game_input.buttons[GameButtonId::Up].ended_down {
+        player_y_delta = -100.0;
+    }
+    if game_input.buttons[GameButtonId::Down].ended_down {
+        player_y_delta = 100.0;
+    }
+    if game_input.buttons[GameButtonId::Left].ended_down {
+        player_x_delta = -100.0;
+    }
+    if game_input.buttons[GameButtonId::Right].ended_down {
+        player_x_delta = 100.0;
+    }
+
+    // TODO(coljnr9): bounds checking
+
+    let tile_map = [
+        [1, 0u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [1, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0],
+        [1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0],
+        [1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0],
+        [1, 1, 0, 0, 0, 1, 1, 0, 1, 1, 1, 1, 1],
+        [0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+        [0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+        [0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    ];
+    let tile_map = TileMap {
+        map_count_x: 13,
+        map_count_y: 9,
+        upper_left_x: 0.0,
+        upper_left_y: 0.0,
+        width: 100.0,
+        height: 100.0,
+        tiles: tile_map.as_flattened(),
     };
-    render_player(
+    draw_rectangle(
         graphics_buffer,
-        game_state.player_x,
-        game_state.player_y,
-        color,
+        0.0,
+        0.0,
+        graphics_buffer.width_pixels as f64,
+        graphics_buffer.height_pixels as f64,
+        1.0,
+        0.0,
+        1.0,
     );
 
+    let tile_width = 100.0;
+    let tile_height = 100.0;
+
+    let player_width = 0.5 * tile_width;
+    let player_height = 0.75 * tile_height;
+
+    let new_player_x = game_state.player_x + game_input.dt * player_x_delta;
+    let new_player_y = game_state.player_y + game_input.dt * player_y_delta;
+
+    for y in 0..tile_map.map_count_y {
+        for x in 0..tile_map.map_count_x {
+            let min_x = x as f64 * tile_width;
+            let min_y = y as f64 * tile_height;
+            let max_x = min_x + tile_width;
+            let max_y = min_y + tile_height;
+
+            let grey = if tile_map.value_at(x as f64, y as f64) > 0 {
+                1.0
+            } else {
+                0.5
+            };
+            draw_rectangle(
+                graphics_buffer,
+                min_x,
+                min_y,
+                max_x,
+                max_y,
+                grey,
+                grey,
+                grey,
+            );
+        }
+    }
+    let min_x = new_player_x - player_width / 2.0;
+    let min_y = new_player_y - player_height;
+
+    let max_x = new_player_x + player_width / 2.0;
+    let max_y = new_player_y;
+
+    if is_tile_map_point_empty(min_x, max_y, &tile_map)
+        && is_tile_map_point_empty(max_x, max_y, &tile_map)
+    {
+        game_state.player_x = new_player_x;
+        game_state.player_y = new_player_y;
+    }
+
+    draw_rectangle(graphics_buffer, min_x, min_y, max_x, max_y, 0.0, 0.0, 1.0);
     Ok(())
 }
 
+struct TileMap<'a> {
+    map_count_x: usize,
+    map_count_y: usize,
+    upper_left_x: f64,
+    upper_left_y: f64,
+    width: f64,
+    height: f64,
+
+    tiles: &'a [u8],
+}
+
+impl<'a> TileMap<'a> {
+    fn value_at(&self, x: f64, y: f64) -> u8 {
+        let x = x.floor() as usize;
+        let y = y.floor() as usize;
+        let row = self.map_count_x * y;
+        let col = x;
+        self.tiles[row + col]
+    }
+}
+fn is_tile_map_point_empty(x: f64, y: f64, tile_map: &TileMap) -> bool {
+    let mut is_empty = false;
+    if (x < 0.0) || (y < 0.0) {
+        return is_empty;
+    }
+    let tile_x = (x / tile_map.width).floor() as usize;
+    let tile_y = (y / tile_map.height).floor() as usize;
+
+    if (tile_x < tile_map.map_count_x) && (tile_y < tile_map.map_count_y) {
+        let tile_map_value = tile_map.value_at(tile_x as f64, tile_y as f64);
+        if tile_map_value == 1 {
+            is_empty = true;
+        }
+    }
+    is_empty
+}
 pub fn game_audio_render_internal(game_state: &mut GameState, audio_buffer: &mut AudioBuffer) {
     for (d_theta, frame) in audio_buffer
         .samples_buf
@@ -109,12 +228,13 @@ pub fn game_audio_render_internal(game_state: &mut GameState, audio_buffer: &mut
         .enumerate()
     {
         let value = 2000.0
-            * (2.0 * consts::PI * 440.0 * (game_state.theta + d_theta as f32)
-                / audio_buffer.sample_rate as f32)
+            * (2.0 * consts::PI * 440.0 * (game_state.theta + d_theta as f64)
+                / audio_buffer.sample_rate as f64)
                 .sin();
+        let value = 0.0;
         frame.copy_from_slice(&[value as i16, value as i16]);
     }
-    game_state.theta += (audio_buffer.samples_buf.len() / 2) as f32;
+    game_state.theta += (audio_buffer.samples_buf.len() / 2) as f64;
 }
 
 /// # Safety: See game_state_from_memory
@@ -165,8 +285,8 @@ unsafe fn game_state_from_memory(memory: &mut GameMemory) -> &mut GameState {
         game_state.y_offset = 0;
         game_state.theta = 0.0;
 
-        game_state.player_x = 1000;
-        game_state.player_y = 1000;
+        game_state.player_x = 50.0;
+        game_state.player_y = 100.0;
         memory.is_initialized = true;
     }
     game_state

@@ -64,6 +64,7 @@ pub struct GameButtonState {
 pub struct GameInput {
     pub buttons: [GameButtonState; NUM_BUTTONS],
     pub pointer: Pointer,
+    pub dt: f64,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -231,6 +232,7 @@ impl GameMemory {
     }
 }
 
+#[derive(Debug)]
 #[repr(C)]
 pub struct PlatformApi;
 
