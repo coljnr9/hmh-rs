@@ -94,7 +94,7 @@ const LEFT_KEYCODE: u32 = 272;
 const RIGHT_KEYCODE: u32 = 273;
 
 const GAME_LIB_NAME: &str = "libgame.so";
-const RECORDING_FILE_NAME: &str = "recording.hmi";
+const INPUTS_RECORDING_FILE: &str = "inputs_recording.hmi";
 const KEYBOARD_MAPPING: [u32; shared::NUM_BUTTONS] = [
     W_KEY_CODE,
     S_KEY_CODE,
@@ -114,7 +114,7 @@ const PONTER_BUTTON_MAPPING: [u32; shared::NUM_POINTER_BUTTONS] = [LEFT_KEYCODE,
 
 const ALSA_CHANNELS: u32 = 2;
 const ALSA_SAMPLE_RATE: u32 = 48_000;
-const LATENCY_TARGET_FRAMES: u32 = ALSA_SAMPLE_RATE;
+const LATENCY_TARGET_FRAMES: u32 = ALSA_SAMPLE_RATE / 10;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum RegionState {
@@ -258,15 +258,13 @@ enum PlaybackState {
 struct AppData {
     proxies: Proxies,
     memory: Memory,
-    // For things that can't/shouldn't be processed in the Dispatch handler, but rather in the game
-    // loop
     inbox: Inbox,
     window_width_pixels: usize,
     window_height_pixels: usize,
     monitor_refresh_hz: i32,
     controller: GameInput,
     playback_state: PlaybackState,
-    recording_file: Option<File>,
+    inputs_recording_file: Option<File>,
 }
 
 impl AppData {}
@@ -425,9 +423,9 @@ impl Dispatch<WlKeyboard, ()> for AppData {
                 ..
             } => {
                 let execution_dir = get_executable_parent_dir().unwrap();
-                let recording_file_path = execution_dir.join(RECORDING_FILE_NAME);
+                let recording_file_path = execution_dir.join(INPUTS_RECORDING_FILE);
                 if state.playback_state == PlaybackState::Idle {
-                    state.recording_file = Some(
+                    state.inputs_recording_file = Some(
                         OpenOptions::new()
                             .write(true)
                             .create(true)
@@ -476,8 +474,6 @@ impl Dispatch<WlKeyboard, ()> for AppData {
             }
             _ => {}
         }
-
-        // Hacky for now
     }
 }
 
@@ -661,7 +657,7 @@ fn main() -> Result<()> {
         controller: GameInput::default(),
         monitor_refresh_hz: 60,
         playback_state: PlaybackState::Idle,
-        recording_file: None,
+        inputs_recording_file: None,
     };
 
     app.proxies.wl_surface.commit();
@@ -723,23 +719,21 @@ fn main() -> Result<()> {
     read_game_memory(&mut game_memory_buffer, &mut game_memory)?;
     let mut loop_start = Instant::now();
     let mut loop_end: Instant;
-    let mut written_window = [0usize; 32];
-    let mut queued_window = [0usize; 32];
-    let mut idx = 0;
     let mut generation_id = 0;
+
     let execution_dir = get_executable_parent_dir()?;
     let game_lib_path = execution_dir.join(GAME_LIB_NAME);
     let mut game_code = load(&game_lib_path, generation_id)?;
     let mut last_mtime = fs::metadata(&game_lib_path)?.modified()?;
     let mut need_reload = false;
+
+    // === MAIN LOOP ===
     loop {
         let _loop_enter = debug_span!("loop").entered();
         if app.inbox.close {
             break Ok(());
         }
 
-        // TODO(coljnr9): Decide on behavior when the file is not available. Also, see if there's a
-        // better completion signal for the compile being complete
         match fs::metadata(&game_lib_path) {
             Ok(meta) => match meta.modified() {
                 Ok(mtime) => {
@@ -765,7 +759,6 @@ fn main() -> Result<()> {
             game_code = load(&game_lib_path, generation_id).unwrap_or(game_code);
         }
 
-        // Sound
         let available_frames = pcm.avail_update()?;
         let queued_frames = alsa_capacity_frames as i64 - available_frames;
         let desired_frames = min(
@@ -773,12 +766,6 @@ fn main() -> Result<()> {
             available_frames,
         )
         .max(0) as usize;
-        written_window[idx] = desired_frames;
-        queued_window[idx] = queued_frames as usize;
-        idx += 1;
-        if idx == 32 {
-            idx = 0;
-        }
 
         // We ask for desired frames, ALSA determines how much it can handle, then gives me a slice
         // len min(desired_frames, alsa_capacity_frames) * 2.
@@ -799,17 +786,10 @@ fn main() -> Result<()> {
         })? as usize;
 
         if pcm.state() != pcm::State::Running {
-            debug!("Kicking off audio playback");
             pcm.start()?;
         }
 
-        debug!(
-            available_frames = available_frames,
-            written_frames = written_frames,
-            queued_frames = queued_frames,
-            pcm_state = ?pcm.state(),
-            "audio queue measurements"
-        );
+        // === Graphics ===
         let slot = if let Some(index) = app
             .memory
             .regions
@@ -822,102 +802,104 @@ fn main() -> Result<()> {
             continue;
         };
 
-        // Pacing by compositor
-        if app.inbox.frame_done {
-            // Check if a resize is needed. We may have applied the resize request to the _other_
-            // buffer but not this one.
-            if slot.current_buffer_width != app.window_width_pixels
-                || slot.current_buffer_height != app.window_height_pixels
-            {
-                slot.ensure_size(
-                    app.window_width_pixels,
-                    app.window_height_pixels,
-                    &app.proxies.wl_shm_pool,
-                    qh,
-                );
-            }
-
-            app.proxies.wl_surface.frame(qh, ());
-
-            slot.state = RegionState::Busy;
-
-            let graphics_buffer = GraphicsBuffer {
-                pixels: &mut app.memory.backbuffer
-                    [slot.offset..slot.offset + app.window_height_pixels * POOL_STRIDE_BYTES],
-                width_pixels: app.window_width_pixels,
-                height_pixels: app.window_height_pixels,
-                pitch_bytes: POOL_STRIDE_BYTES,
-                bytes_per_pixel: BYTES_PER_PIXEL,
-                pitch_pixels: POOL_STRIDE_BYTES / BYTES_PER_PIXEL,
-            };
-
-            let _platform_api = PlatformApi;
-            // Get new frame content
-            let mut graphics_buffer_raw = graphics_buffer.to_raw();
-            match app.playback_state {
-                PlaybackState::RecordInit => {
-                    info!("Initializing recording");
-                    record_game_memory(&mut game_memory_buffer, &game_memory)?;
-                    record_input(&mut app.recording_file, &app.controller)?;
-                    app.playback_state = PlaybackState::Recording(0);
-                }
-                PlaybackState::Recording(_i) => {
-                    record_input(&mut app.recording_file, &app.controller)?;
-                }
-                PlaybackState::PlaybackInit => {
-                    info!("Initializing playback");
-                    read_game_memory(&mut game_memory_buffer, &mut game_memory)?;
-                    if let Some(f) = &mut app.recording_file {
-                        f.seek(SeekFrom::Start(0))?;
-                    }
-                    app.controller = playback_input(
-                        &mut game_memory_buffer,
-                        &mut app.recording_file,
-                        &mut game_memory,
-                    )?;
-                    app.playback_state = PlaybackState::Playing(0);
-                }
-                PlaybackState::Playing(_i) => {
-                    app.controller = playback_input(
-                        &mut game_memory_buffer,
-                        &mut app.recording_file,
-                        &mut game_memory,
-                    )?;
-                }
-                PlaybackState::Idle => {}
-            }
-            unsafe {
-                (game_code.update_and_render)(
-                    &mut game_memory,
-                    &app.controller,
-                    &mut graphics_buffer_raw,
-                );
-            }
-
-            app.controller.clear_half_transition_count();
-            app.proxies.wl_surface.attach(Some(&slot.buffer), 0, 0);
-            app.proxies.wl_surface.damage(
-                0,
-                0,
-                app.window_width_pixels as i32,
-                app.window_height_pixels as i32,
-            );
-
-            app.inbox.frame_done = false;
-        }
-
         if app.inbox.configure_serial.is_some() {
             app.proxies
                 .xdg_surface
                 .ack_configure(app.inbox.configure_serial.unwrap());
             app.inbox.configure_serial = None;
+            app.proxies.wl_surface.commit();
         }
+
+        // Pacing by compositor
+        if !app.inbox.frame_done {
+            debug_span!("dispatch")
+                .in_scope(|| event_queue.blocking_dispatch(&mut app))
+                .context("Dispatching")?;
+            continue;
+        }
+
+        if slot.current_buffer_width != app.window_width_pixels
+            || slot.current_buffer_height != app.window_height_pixels
+        {
+            slot.ensure_size(
+                app.window_width_pixels,
+                app.window_height_pixels,
+                &app.proxies.wl_shm_pool,
+                qh,
+            );
+        }
+
+        slot.state = RegionState::Busy;
+
+        let graphics_buffer = GraphicsBuffer {
+            pixels: &mut app.memory.backbuffer
+                [slot.offset..slot.offset + app.window_height_pixels * POOL_STRIDE_BYTES],
+            width_pixels: app.window_width_pixels,
+            height_pixels: app.window_height_pixels,
+            pitch_bytes: POOL_STRIDE_BYTES,
+            bytes_per_pixel: BYTES_PER_PIXEL,
+            pitch_pixels: POOL_STRIDE_BYTES / BYTES_PER_PIXEL,
+        };
+
+        let _platform_api = PlatformApi;
+
+        let mut graphics_buffer_raw = graphics_buffer.to_raw();
+
+        match app.playback_state {
+            PlaybackState::RecordInit => {
+                info!("Initializing recording");
+                record_game_memory(&mut game_memory_buffer, &game_memory)?;
+                record_input(&mut app.inputs_recording_file, &app.controller)?;
+                app.playback_state = PlaybackState::Recording(0);
+            }
+            PlaybackState::Recording(_i) => {
+                record_input(&mut app.inputs_recording_file, &app.controller)?;
+            }
+            PlaybackState::PlaybackInit => {
+                info!("Initializing playback");
+                read_game_memory(&mut game_memory_buffer, &mut game_memory)?;
+                if let Some(f) = &mut app.inputs_recording_file {
+                    f.seek(SeekFrom::Start(0))?;
+                }
+                app.controller = playback_input(
+                    &mut game_memory_buffer,
+                    &mut app.inputs_recording_file,
+                    &mut game_memory,
+                )?;
+                app.playback_state = PlaybackState::Playing(0);
+            }
+            PlaybackState::Playing(_i) => {
+                app.controller = playback_input(
+                    &mut game_memory_buffer,
+                    &mut app.inputs_recording_file,
+                    &mut game_memory,
+                )?;
+            }
+            PlaybackState::Idle => {}
+        }
+
+        // GameUpdateAndRender
+        unsafe {
+            (game_code.update_and_render)(
+                &mut game_memory,
+                &app.controller,
+                &mut graphics_buffer_raw,
+            );
+        }
+
+        app.proxies.wl_surface.frame(qh, ());
+        app.proxies.wl_surface.attach(Some(&slot.buffer), 0, 0);
+        app.proxies.wl_surface.damage(
+            0,
+            0,
+            app.window_width_pixels as i32,
+            app.window_height_pixels as i32,
+        );
         app.proxies.wl_surface.commit();
 
-        debug_span!("dispatch")
-            .in_scope(|| event_queue.blocking_dispatch(&mut app))
-            .context("Dispatching")?;
+        app.inbox.frame_done = false;
 
+        app.controller.clear_half_transition_count();
         loop_end = Instant::now();
         let _elapsed = loop_end - loop_start;
 
