@@ -1,12 +1,13 @@
 use anyhow::Result;
 use std::{
     io::{Read, Write},
-    mem::transmute,
+    ops::{Index, IndexMut},
 };
 
 pub const NUM_BUTTONS: usize = 12;
 
 // Authoritative ordering for arrays of input codes
+#[derive(Clone, Copy)]
 #[repr(usize)]
 pub enum GameButtonId {
     Up = 0,
@@ -25,6 +26,29 @@ pub enum GameButtonId {
     // Menu
     Back,
     Start,
+}
+
+impl Index<GameButtonId> for [GameButtonState; NUM_BUTTONS] {
+    type Output = GameButtonState;
+    fn index(&self, b_idx: GameButtonId) -> &Self::Output {
+        &self[b_idx as usize]
+    }
+}
+impl IndexMut<GameButtonId> for [GameButtonState; NUM_BUTTONS] {
+    fn index_mut(&mut self, b_idx: GameButtonId) -> &mut Self::Output {
+        &mut self[b_idx as usize]
+    }
+}
+
+impl From<GameButtonId> for usize {
+    fn from(b_idx: GameButtonId) -> Self {
+        b_idx as usize
+    }
+}
+impl From<GameButtonId> for u32 {
+    fn from(b_idx: GameButtonId) -> Self {
+        b_idx as u32
+    }
 }
 
 #[derive(Copy, Default, Clone, Debug)]

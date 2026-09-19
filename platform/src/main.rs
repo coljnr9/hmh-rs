@@ -4,13 +4,13 @@ use std::{
     ffi::c_void,
     fs::{self, File, OpenOptions},
     io::{ErrorKind, Read, Seek, SeekFrom, Write},
-    os::fd::{AsFd, OwnedFd},
+    os::fd::AsFd,
     path::PathBuf,
     time::{Duration, Instant, SystemTime},
 };
 
 use alsa::{
-    Direction::{self, Playback},
+    Direction::{self},
     PCM,
     pcm::{self, HwParams},
 };
@@ -21,7 +21,6 @@ use rustix::{
     fs::{MemfdFlags, Mode, OFlags, memfd_create},
     io::Errno,
     mm::{MapFlags, ProtFlags, mmap_anonymous},
-    net::eth::PRP,
 };
 use shared::{
     AudioBuffer, AudioBufferRaw, GameAudioRenderFn, GameInput, GameMemory, GameUpdateAndRenderFn,
@@ -61,6 +60,7 @@ const KILOBYTE: usize = 1024;
 const MEGABYTE: usize = 1024 * KILOBYTE;
 const GIGABYTE: usize = 1024 * MEGABYTE;
 const TERABYTE: usize = 1024 * GIGABYTE;
+
 #[cfg(debug_assertions)]
 const BASE_ADDRESS: usize = 2 * TERABYTE;
 #[cfg(not(debug_assertions))]
@@ -91,9 +91,8 @@ const ESC_KEY_CODE: u32 = 1;
 
 const HOT_RELOAD_KEYCODE: u32 = 27 - 8;
 const RECORD_HOTKEY: u32 = 29 - 8; // y
-const GAME_LIB_PATH: &str = "target/release/libgame.so";
-
-// Positionally map from GAmeButtonId to the keycode
+const GAME_LIB_NAME: &str = "libgame.so";
+const RECORDING_FILE_NAME: &str = "recording.hmi";
 const KEYBOARD_MAPPING: [u32; shared::NUM_BUTTONS] = [
     W_KEY_CODE,
     S_KEY_CODE,
@@ -110,7 +109,7 @@ const KEYBOARD_MAPPING: [u32; shared::NUM_BUTTONS] = [
 ];
 const ALSA_CHANNELS: u32 = 2;
 const ALSA_SAMPLE_RATE: u32 = 48_000;
-const LATENCY_TARGET_FRAMES: u32 = ALSA_SAMPLE_RATE / 1;
+const LATENCY_TARGET_FRAMES: u32 = ALSA_SAMPLE_RATE;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum RegionState {
@@ -123,6 +122,11 @@ enum RegionState {
 enum RegionIndex {
     A = 0,
     B = 1,
+}
+impl From<RegionIndex> for usize {
+    fn from(value: RegionIndex) -> Self {
+        value as usize
+    }
 }
 
 struct BufferParams {
@@ -412,6 +416,8 @@ impl Dispatch<WlKeyboard, ()> for AppData {
                 ..
             } => {
                 info!("Got 'Y'");
+                let execution_dir = get_executable_parent_dir().unwrap();
+                let recording_file_path = execution_dir.join(RECORDING_FILE_NAME);
                 if state.playback_state == PlaybackState::Idle {
                     state.recording_file = Some(
                         OpenOptions::new()
@@ -419,7 +425,7 @@ impl Dispatch<WlKeyboard, ()> for AppData {
                             .create(true)
                             .read(true)
                             .truncate(true)
-                            .open("recording.bin")
+                            .open(recording_file_path)
                             .unwrap(),
                     );
                     state.playback_state = PlaybackState::RecordInit;
@@ -687,8 +693,10 @@ fn main() -> Result<()> {
     let mut queued_window = [0usize; 32];
     let mut idx = 0;
     let mut generation_id = 0;
-    let mut game_code = load(GAME_LIB_PATH, generation_id)?;
-    let mut last_mtime = fs::metadata(GAME_LIB_PATH)?.modified()?;
+    let execution_dir = get_executable_parent_dir()?;
+    let game_lib_path = execution_dir.join(GAME_LIB_NAME);
+    let mut game_code = load(&game_lib_path, generation_id)?;
+    let mut last_mtime = fs::metadata(&game_lib_path)?.modified()?;
     let mut need_reload = false;
     loop {
         let _loop_enter = debug_span!("loop").entered();
@@ -698,7 +706,7 @@ fn main() -> Result<()> {
 
         // TODO(coljnr9): Decide on behavior when the file is not available. Also, see if there's a
         // better completion signal for the compile being complete
-        match fs::metadata(GAME_LIB_PATH) {
+        match fs::metadata(&game_lib_path) {
             Ok(meta) => match meta.modified() {
                 Ok(mtime) => {
                     if mtime != last_mtime {
@@ -711,7 +719,7 @@ fn main() -> Result<()> {
             },
             Err(e) => error!(
                 "Error accessing file metadata: {:?}\n{:?}",
-                e, GAME_LIB_PATH
+                e, &game_lib_path
             ),
         };
 
@@ -720,7 +728,7 @@ fn main() -> Result<()> {
         {
             need_reload = false;
             generation_id += 1;
-            game_code = load(GAME_LIB_PATH, generation_id).unwrap_or(game_code);
+            game_code = load(&game_lib_path, generation_id).unwrap_or(game_code);
         }
 
         // Sound
@@ -819,7 +827,7 @@ fn main() -> Result<()> {
                     record_input(&mut app.recording_file, &app.controller)?;
                     app.playback_state = PlaybackState::Recording(0);
                 }
-                PlaybackState::Recording(i) => {
+                PlaybackState::Recording(_i) => {
                     record_input(&mut app.recording_file, &app.controller)?;
                 }
                 PlaybackState::PlaybackInit => {
@@ -831,7 +839,7 @@ fn main() -> Result<()> {
                     app.controller = playback_input(&mut app.recording_file, &mut game_memory)?;
                     app.playback_state = PlaybackState::Playing(0);
                 }
-                PlaybackState::Playing(i) => {
+                PlaybackState::Playing(_i) => {
                     app.controller = playback_input(&mut app.recording_file, &mut game_memory)?;
                 }
                 PlaybackState::Idle => {}
@@ -1027,6 +1035,7 @@ fn playback_input(file: &mut Option<File>, memory: &mut GameMemory) -> Result<Ga
                 Err(e) if e.kind() == ErrorKind::UnexpectedEof => {
                     file.seek(SeekFrom::Start(0))?;
                     memory.read_from(file)?;
+                    file.read_exact(&mut buf)?;
                     Ok(GameInput::from_bytes_unsafe(&buf))
                 }
                 Err(e) => {
@@ -1054,4 +1063,12 @@ fn read_game_memory(file: &mut Option<File>, memory: &mut GameMemory) -> Result<
         None => bail!("Memory file was unavailable"),
     }
     Ok(())
+}
+
+fn get_executable_parent_dir() -> Result<PathBuf> {
+    let exe_path = env::current_exe()?;
+    Ok(exe_path
+        .parent()
+        .context("Getting parent dir of execution path")?
+        .to_path_buf())
 }

@@ -23,8 +23,8 @@ pub struct GameState {
 fn render_player(graphics_buffer: &mut GraphicsBuffer, player_x: i64, player_y: i64) {
     let player_h = 50;
     let player_w = 50;
-    let top = player_y;
-    let bottom = player_y + 10;
+    let _top = player_y;
+    let _bottom = player_y + 10;
     let rows = &mut bytemuck::cast_slice_mut::<u8, u32>(graphics_buffer.pixels)[player_y as usize
         * graphics_buffer.pitch_pixels
         ..(player_y + player_h) as usize * graphics_buffer.pitch_pixels]
@@ -43,22 +43,22 @@ pub fn game_update_and_render_internal(
     _platform_api: &PlatformApi,
 ) -> Result<()> {
     game_state.x_offset += 1;
-    if game_input.buttons[GameButtonId::Left as usize].ended_down {
+    if game_input.buttons[GameButtonId::Left].ended_down {
         game_state.player_x -= 1;
     }
-    if game_input.buttons[GameButtonId::Right as usize].ended_down {
+    if game_input.buttons[GameButtonId::Right].ended_down {
         game_state.player_x += 1;
     }
-    if game_input.buttons[GameButtonId::Up as usize].ended_down {
+    if game_input.buttons[GameButtonId::Up].ended_down {
         game_state.player_y -= 1;
     }
-    if game_input.buttons[GameButtonId::Down as usize].ended_down {
+    if game_input.buttons[GameButtonId::Down].ended_down {
         let new_y = game_state.player_y + 1;
         if (new_y as usize) < graphics_buffer.height_pixels {
             game_state.player_y = new_y;
         }
     }
-    if game_input.buttons[GameButtonId::ActionUp as usize].ended_down {
+    if game_input.buttons[GameButtonId::ActionUp].ended_down {
         game_state.player_y -= 30;
     }
 
