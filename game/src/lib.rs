@@ -1,6 +1,5 @@
 use anyhow::Result;
 use std::f32::consts;
-use tracing::info;
 
 use shared::{
     AudioBuffer, AudioBufferRaw, GameButtonId, GameInput, GameMemory, GraphicsBuffer,

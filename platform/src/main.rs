@@ -26,7 +26,7 @@ use shared::{
     AudioBuffer, AudioBufferRaw, GameAudioRenderFn, GameInput, GameMemory, GameUpdateAndRenderFn,
     GraphicsBuffer, GraphicsBufferRaw, PlatformApi,
 };
-use tracing::{debug, debug_span, error, info};
+use tracing::{debug, debug_span, error, info, instrument};
 use tracing_subscriber::{EnvFilter, fmt::format::FmtSpan};
 use wayland_client::{
     Connection, Dispatch, QueueHandle, WEnum,
@@ -89,7 +89,6 @@ const L_KEY_CODE: u32 = 38;
 const SPACE_KEY_CODE: u32 = 57;
 const ESC_KEY_CODE: u32 = 1;
 
-const HOT_RELOAD_KEYCODE: u32 = 27 - 8;
 const RECORD_HOTKEY: u32 = 29 - 8; // y
 const LEFT_KEYCODE: u32 = 272;
 const RIGHT_KEYCODE: u32 = 273;
@@ -421,15 +420,6 @@ impl Dispatch<WlKeyboard, ()> for AppData {
                 size: _,
             } => {}
             wl_keyboard::Event::Key {
-                key: HOT_RELOAD_KEYCODE,
-                state: WEnum::Value(KeyState::Pressed),
-                ..
-            } => {
-                state.inbox.reload_requested = true;
-                //  I think this means "R" is not available in the game at all. PRobaly change this
-                //  to a modifier or something
-            }
-            wl_keyboard::Event::Key {
                 key: RECORD_HOTKEY,
                 state: WEnum::Value(KeyState::Pressed),
                 ..
@@ -502,27 +492,25 @@ impl Dispatch<WlPointer, ()> for AppData {
     ) {
         match event {
             wl_pointer::Event::Enter {
-                serial,
-                surface,
                 surface_x,
                 surface_y,
+                ..
             } => {
                 app_data.controller.pointer.x = surface_x;
                 app_data.controller.pointer.y = surface_y;
             }
             wl_pointer::Event::Motion {
-                time,
                 surface_x,
                 surface_y,
+                ..
             } => {
                 app_data.controller.pointer.x = surface_x;
                 app_data.controller.pointer.y = surface_y;
             }
             wl_pointer::Event::Button {
-                serial,
-                time,
                 button,
                 state: WEnum::Value(state),
+                ..
             } => {
                 let is_down = state == wl_pointer::ButtonState::Pressed;
                 update_pointer_input(&mut app_data.controller, button, is_down);
@@ -565,6 +553,7 @@ pub(crate) fn platform_write_entire_file(file_name: &str, data: &[u8]) -> Result
     Ok(())
 }
 
+#[instrument]
 fn main() -> Result<()> {
     let logging_env_filter = EnvFilter::builder()
         .with_default_directive(tracing_subscriber::filter::LevelFilter::INFO.into())
@@ -697,6 +686,12 @@ fn main() -> Result<()> {
     // Platform <-> game interaction assumes a zeroed, aligned memory block.
     let permanent_size = 64 * MEGABYTE;
     let transient_size = 256 * MEGABYTE;
+    let game_memory_mmap = memfd_create("game_memory", MemfdFlags::empty())?;
+    let game_memory_file = File::from(game_memory_mmap);
+    game_memory_file.set_len((permanent_size + transient_size) as u64)?;
+    let mut game_memory_buffer = unsafe { memmap2::MmapMut::map_mut(&game_memory_file)? };
+    game_memory_buffer.fill(0);
+
     let total_size = permanent_size + transient_size;
 
     let flags = if BASE_ADDRESS != 0 {
@@ -714,6 +709,7 @@ fn main() -> Result<()> {
             flags,
         )?
     } as *mut u8;
+
     info!("Game memory at {:p}", base);
     let mut game_memory = GameMemory {
         is_initialized: false,
@@ -722,6 +718,9 @@ fn main() -> Result<()> {
         transient: unsafe { base.add(permanent_size) },
         transient_size,
     };
+
+    // Just touch the game memory so that our in-game load doesn't have a slow first execution.
+    read_game_memory(&mut game_memory_buffer, &mut game_memory)?;
     let mut loop_start = Instant::now();
     let mut loop_end: Instant;
     let mut written_window = [0usize; 32];
@@ -858,7 +857,7 @@ fn main() -> Result<()> {
             match app.playback_state {
                 PlaybackState::RecordInit => {
                     info!("Initializing recording");
-                    record_game_memory(&mut app.recording_file, &game_memory)?;
+                    record_game_memory(&mut game_memory_buffer, &game_memory)?;
                     record_input(&mut app.recording_file, &app.controller)?;
                     app.playback_state = PlaybackState::Recording(0);
                 }
@@ -867,15 +866,23 @@ fn main() -> Result<()> {
                 }
                 PlaybackState::PlaybackInit => {
                     info!("Initializing playback");
+                    read_game_memory(&mut game_memory_buffer, &mut game_memory)?;
                     if let Some(f) = &mut app.recording_file {
                         f.seek(SeekFrom::Start(0))?;
                     }
-                    read_game_memory(&mut app.recording_file, &mut game_memory)?;
-                    app.controller = playback_input(&mut app.recording_file, &mut game_memory)?;
+                    app.controller = playback_input(
+                        &mut game_memory_buffer,
+                        &mut app.recording_file,
+                        &mut game_memory,
+                    )?;
                     app.playback_state = PlaybackState::Playing(0);
                 }
                 PlaybackState::Playing(_i) => {
-                    app.controller = playback_input(&mut app.recording_file, &mut game_memory)?;
+                    app.controller = playback_input(
+                        &mut game_memory_buffer,
+                        &mut app.recording_file,
+                        &mut game_memory,
+                    )?;
                 }
                 PlaybackState::Idle => {}
             }
@@ -1053,6 +1060,7 @@ fn load(path: impl Into<PathBuf>, generation_id: u64) -> Result<GameCode> {
     })
 }
 
+#[instrument]
 fn record_input(file: &mut Option<File>, input: &GameInput) -> Result<()> {
     if let Some(file) = file {
         file.write_all(input.as_bytes_unsafe())?;
@@ -1061,16 +1069,22 @@ fn record_input(file: &mut Option<File>, input: &GameInput) -> Result<()> {
     Ok(())
 }
 
-fn playback_input(file: &mut Option<File>, memory: &mut GameMemory) -> Result<GameInput> {
-    match file {
-        Some(file) => {
+#[instrument]
+fn playback_input(
+    memory_file: &mut MmapMut,
+    inputs_file: &mut Option<File>,
+    memory: &mut GameMemory,
+) -> Result<GameInput> {
+    match inputs_file {
+        Some(inputs_file) => {
             let mut buf = [0u8; size_of::<GameInput>()];
-            match file.read_exact(&mut buf) {
+            match inputs_file.read_exact(&mut buf) {
                 Ok(_) => Ok(GameInput::from_bytes_unsafe(&buf)),
                 Err(e) if e.kind() == ErrorKind::UnexpectedEof => {
-                    file.seek(SeekFrom::Start(0))?;
-                    memory.read_from(file)?;
-                    file.read_exact(&mut buf)?;
+                    inputs_file.seek(SeekFrom::Start(0))?;
+
+                    read_game_memory(memory_file, memory)?;
+                    inputs_file.read_exact(&mut buf)?;
                     Ok(GameInput::from_bytes_unsafe(&buf))
                 }
                 Err(e) => {
@@ -1082,21 +1096,19 @@ fn playback_input(file: &mut Option<File>, memory: &mut GameMemory) -> Result<Ga
     }
 }
 
-fn record_game_memory(file: &mut Option<File>, memory: &GameMemory) -> Result<()> {
-    if let Some(file) = file {
-        memory.write_to(file)?;
-    }
+#[instrument]
+fn record_game_memory(file: &mut MmapMut, memory: &GameMemory) -> Result<()> {
+    let mut dst: &mut [u8] = &mut file[..];
+    memory.write_to(&mut dst)?;
 
     Ok(())
 }
 
-fn read_game_memory(file: &mut Option<File>, memory: &mut GameMemory) -> Result<()> {
-    match file {
-        Some(file) => {
-            memory.read_from(file)?;
-        }
-        None => bail!("Memory file was unavailable"),
-    }
+#[instrument]
+fn read_game_memory(game_memory_file: &mut MmapMut, memory: &mut GameMemory) -> Result<()> {
+    let src: &[u8] = &game_memory_file[..];
+    memory.read_from(src).context("reading game memory")?;
+
     Ok(())
 }
 

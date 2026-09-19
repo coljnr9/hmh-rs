@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::{
     io::{Read, Write},
     ops::{Index, IndexMut},
@@ -171,7 +171,7 @@ pub struct AudioBuffer<'a> {
 }
 
 impl<'a> AudioBuffer<'a> {
-    // Safety: raw.samples_buf is valid for frames_count*2, not aliased for 'a
+    ///  # Safety:  raw.samples_buf is valid for frames_count*2, not aliased for 'a
     pub unsafe fn from_raw(raw: AudioBufferRaw) -> AudioBuffer<'a> {
         let len = raw.frame_count * 2;
         let samples_buf = unsafe { std::slice::from_raw_parts_mut(raw.samples_buf, len) };
@@ -200,6 +200,16 @@ pub struct GameMemory {
     pub transient_size: usize,
 }
 
+impl std::fmt::Debug for GameMemory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GameMemory")
+            .field("is_initialized", &self.is_initialized)
+            .field("permanent_size", &self.permanent_size)
+            .field("transient_size", &self.transient_size)
+            .finish()
+    }
+}
+
 impl GameMemory {
     pub fn write_to(&self, w: &mut impl Write) -> Result<()> {
         let bytes = unsafe {
@@ -209,14 +219,14 @@ impl GameMemory {
         Ok(())
     }
 
-    pub fn read_from(&mut self, r: &mut impl Read) -> Result<()> {
+    pub fn read_from(&mut self, mut r: impl Read) -> Result<()> {
         let bytes = unsafe {
             std::slice::from_raw_parts_mut(
                 self.permanent,
                 self.permanent_size + self.transient_size,
             )
         };
-        r.read_exact(bytes)?;
+        r.read_exact(bytes).context("reading exact")?;
         Ok(())
     }
 }
