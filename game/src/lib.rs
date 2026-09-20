@@ -10,11 +10,11 @@ const TILE_MAP_COUNT_X: usize = 13;
 const TILE_MAP_COUNT_Y: usize = 9;
 
 const TILES_00: [[u8; TILE_MAP_COUNT_X]; TILE_MAP_COUNT_Y] = [
-    [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    [1, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0],
-    [1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0],
-    [1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0],
-    [1, 1, 0, 0, 0, 1, 1, 0, 1, 1, 1, 1, 1],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 1, 1, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0],
+    [0, 1, 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0],
+    [0, 1, 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0],
+    [0, 1, 0, 0, 0, 1, 1, 0, 1, 1, 1, 1, 1],
     [0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
     [0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
     [0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0],
@@ -224,10 +224,12 @@ pub fn game_update_and_render_internal(
             );
         }
     }
-    match next_tile_map_dir(new_player_x, new_player_y, &tile_map) {
+    match next_tile_map_dir(new_player_x, new_player_y, player_width, &tile_map) {
         NextTileMapDirection::North => {
             game_state.tile_map_idx -= 2;
-            new_player_y = tile_map.height;
+            new_player_y = -1.0
+                + tile_maps[game_state.tile_map_idx].height
+                    * tile_maps[game_state.tile_map_idx].map_count_y as f64;
         }
         NextTileMapDirection::South => {
             game_state.tile_map_idx += 2;
@@ -235,11 +237,13 @@ pub fn game_update_and_render_internal(
         }
         NextTileMapDirection::East => {
             game_state.tile_map_idx += 1;
-            new_player_x = 0.0;
+            new_player_x = player_width;
         }
         NextTileMapDirection::West => {
             game_state.tile_map_idx -= 1;
-            new_player_x = tile_map.height;
+            new_player_x = -player_width
+                + tile_maps[game_state.tile_map_idx].width
+                    * tile_maps[game_state.tile_map_idx].map_count_x as f64;
         }
         NextTileMapDirection::Stay => {}
     };
@@ -258,6 +262,8 @@ pub fn game_update_and_render_internal(
         game_state.player_x = new_player_x;
         game_state.player_y = new_player_y;
     }
+
+    dbg!(game_state.player_x, game_state.player_y);
 
     draw_rectangle(graphics_buffer, min_x, min_y, max_x, max_y, 0.0, 0.0, 1.0);
     Ok(())
@@ -287,12 +293,11 @@ fn is_tile_map_point_empty(x: f64, y: f64, tile_map: &TileMap) -> bool {
     let mut is_empty = false;
     let tile_x = (x / tile_map.width).floor() as usize;
     let tile_y = (y / tile_map.height).floor() as usize;
+    dbg!(x, y, tile_x, tile_y);
 
-    if (tile_x < tile_map.map_count_x) && (tile_y < tile_map.map_count_y) {
-        let tile_map_value = tile_map.value_at(tile_x as f64, tile_y as f64);
-        if tile_map_value == 1 {
-            is_empty = true;
-        }
+    let tile_map_value = tile_map.value_at(tile_x as f64, tile_y as f64);
+    if tile_map_value == 1 {
+        is_empty = true;
     }
     is_empty
 }
@@ -322,21 +327,26 @@ enum NextTileMapDirection {
     West,
     Stay,
 }
-fn next_tile_map_dir(test_x: f64, test_y: f64, tile_map: &TileMap) -> NextTileMapDirection {
-    let tile_idx_x = (test_x / tile_map.width).floor() as i64;
+fn next_tile_map_dir(
+    test_x: f64,
+    test_y: f64,
+    x_width: f64,
+    tile_map: &TileMap,
+) -> NextTileMapDirection {
+    let tile_idx_x_min = ((test_x - x_width / 2.0) / tile_map.width).floor() as i64;
+    let tile_idx_x_max = ((test_x + x_width / 2.0) / tile_map.width).floor() as i64;
+    dbg!(tile_idx_x_min, tile_idx_x_max);
+
     let tile_idx_y = (test_y / tile_map.height).floor() as i64;
-    println!(
-        "tile_idx_x: {}, tile_idx_y: {}, test_x: {}, test_y: {}",
-        tile_idx_x, tile_idx_y, test_x, test_y
-    );
 
     let next_tm_south = (tile_map.map_count_y) as i64;
     let next_tm_east = (tile_map.map_count_x) as i64;
 
-    if tile_idx_x == -1 {
+    if tile_idx_x_min == -1 {
         return NextTileMapDirection::West;
     }
-    if tile_idx_x == next_tm_east {
+    if tile_idx_x_max == next_tm_east {
+        dbg!("Moving east");
         return NextTileMapDirection::East;
     }
     if tile_idx_y == -1 {
@@ -400,8 +410,8 @@ unsafe fn game_state_from_memory(memory: &mut GameMemory) -> &mut GameState {
         game_state.y_offset = 0;
         game_state.theta = 0.0;
 
-        game_state.player_x = 50.0;
-        game_state.player_y = 100.0;
+        game_state.player_x = 250.0;
+        game_state.player_y = 250.0;
         game_state.tile_map_idx = 0;
         memory.is_initialized = true;
     }
