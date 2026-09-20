@@ -6,6 +6,61 @@ use shared::{
     GraphicsBufferRaw, PlatformApi,
 };
 
+const TILE_MAP_COUNT_X: usize = 13;
+const TILE_MAP_COUNT_Y: usize = 9;
+
+const TILES_00: [[u8; TILE_MAP_COUNT_X]; TILE_MAP_COUNT_Y] = [
+    [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [1, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0],
+    [1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0],
+    [1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0],
+    [1, 1, 0, 0, 0, 1, 1, 0, 1, 1, 1, 1, 1],
+    [0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+    [0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+    [0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+];
+
+const TILES_01: [[u8; TILE_MAP_COUNT_X]; TILE_MAP_COUNT_Y] = [
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0],
+    [0, 1, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0],
+    [1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+];
+
+const TILES_10: [[u8; TILE_MAP_COUNT_X]; TILE_MAP_COUNT_Y] = [
+    [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+];
+
+const TILES_11: [[u8; TILE_MAP_COUNT_X]; TILE_MAP_COUNT_Y] = [
+    [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+    [1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+];
+
+//      [00] [01]
+//      [10] [11]
+//
+
 #[repr(C)]
 #[derive(Default, Debug)]
 pub struct GameState {
@@ -16,27 +71,9 @@ pub struct GameState {
 
     player_x: f64,
     player_y: f64,
+    tile_map_idx: usize,
 }
 
-fn render_weird_gradient(
-    game_state: &mut GameState,
-    graphics_buffer: &mut GraphicsBuffer,
-    game_input: &GameInput,
-) {
-    let rows = bytemuck::cast_slice_mut::<u8, u32>(graphics_buffer.pixels)
-        .chunks_mut(graphics_buffer.pitch_bytes / 4);
-
-    for (y, row) in rows.take(graphics_buffer.height_pixels).enumerate() {
-        for (x, px) in row[..graphics_buffer.width_pixels].iter_mut().enumerate() {
-            *px = u32::from_be_bytes([
-                0,
-                0,
-                (y as i64 + game_state.y_offset) as u8,
-                (x as i64 + game_state.x_offset) as u8,
-            ]);
-        }
-    }
-}
 fn draw_rectangle(
     graphics_buffer: &mut GraphicsBuffer,
     min_x: f64,
@@ -102,26 +139,46 @@ pub fn game_update_and_render_internal(
 
     // TODO(coljnr9): bounds checking
 
-    let tile_map = [
-        [1, 0u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [1, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0],
-        [1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0],
-        [1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0],
-        [1, 1, 0, 0, 0, 1, 1, 0, 1, 1, 1, 1, 1],
-        [0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
-        [0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
-        [0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    ];
-    let tile_map = TileMap {
+    let mut tile_map_00 = TileMap {
         map_count_x: 13,
         map_count_y: 9,
         upper_left_x: 0.0,
         upper_left_y: 0.0,
         width: 100.0,
         height: 100.0,
-        tiles: tile_map.as_flattened(),
+        tiles: TILES_00.as_flattened(),
     };
+
+    let mut tile_map_01 = TileMap {
+        map_count_x: 13,
+        map_count_y: 9,
+        upper_left_x: 0.0,
+        upper_left_y: 0.0,
+        width: 100.0,
+        height: 100.0,
+        tiles: TILES_01.as_flattened(),
+    };
+    let mut tile_map_10 = TileMap {
+        map_count_x: 13,
+        map_count_y: 9,
+        upper_left_x: 0.0,
+        upper_left_y: 0.0,
+        width: 100.0,
+        height: 100.0,
+        tiles: TILES_10.as_flattened(),
+    };
+    let mut tile_map_11 = TileMap {
+        map_count_x: 13,
+        map_count_y: 9,
+        upper_left_x: 0.0,
+        upper_left_y: 0.0,
+        width: 100.0,
+        height: 100.0,
+        tiles: TILES_11.as_flattened(),
+    };
+
+    let tile_maps = [tile_map_00, tile_map_01, tile_map_10, tile_map_11];
+    let mut tile_map = &tile_maps[0];
     draw_rectangle(
         graphics_buffer,
         0.0,
@@ -172,12 +229,21 @@ pub fn game_update_and_render_internal(
     let max_x = new_player_x + player_width / 2.0;
     let max_y = new_player_y;
 
-    if is_tile_map_point_empty(min_x, max_y, &tile_map)
-        && is_tile_map_point_empty(max_x, max_y, &tile_map)
-    {
-        game_state.player_x = new_player_x;
-        game_state.player_y = new_player_y;
-    }
+    match next_tile_map_dir(new_player_x, new_player_y, &tile_map) {
+        NextTileMapDirection::North => game_state.tile_map_idx -= 2,
+        NextTileMapDirection::South => game_state.tile_map_idx += 2,
+        NextTileMapDirection::East => game_state.tile_map_idx += 1,
+        NextTileMapDirection::West => game_state.tile_map_idx -= 1,
+        NextTileMapDirection::Stay => {}
+    };
+
+    tile_map = &tile_maps[game_state.tile_map_idx];
+    // if is_tile_map_point_empty(min_x, max_y, &tile_map)
+    //     && is_tile_map_point_empty(max_x, max_y, &tile_map)
+    // {
+    game_state.player_x = new_player_x;
+    game_state.player_y = new_player_y;
+    // }
 
     draw_rectangle(graphics_buffer, min_x, min_y, max_x, max_y, 0.0, 0.0, 1.0);
     Ok(())
@@ -205,9 +271,6 @@ impl<'a> TileMap<'a> {
 }
 fn is_tile_map_point_empty(x: f64, y: f64, tile_map: &TileMap) -> bool {
     let mut is_empty = false;
-    if (x < 0.0) || (y < 0.0) {
-        return is_empty;
-    }
     let tile_x = (x / tile_map.width).floor() as usize;
     let tile_y = (y / tile_map.height).floor() as usize;
 
@@ -237,7 +300,40 @@ pub fn game_audio_render_internal(game_state: &mut GameState, audio_buffer: &mut
     game_state.theta += (audio_buffer.samples_buf.len() / 2) as f64;
 }
 
-/// # Safety: See game_state_from_memory
+#[derive(Debug)]
+enum NextTileMapDirection {
+    North,
+    South,
+    East,
+    West,
+    Stay,
+}
+fn next_tile_map_dir(test_x: f64, test_y: f64, tile_map: &TileMap) -> NextTileMapDirection {
+    let tile_idx_x = (test_x / tile_map.width).floor() as i64;
+    let tile_idx_y = (test_y / tile_map.height).floor() as i64;
+    println!("tile_idx_x: {}, tile_idx_y: {}", tile_idx_x, tile_idx_y);
+
+    let next_tm_south = (tile_map.map_count_y) as i64;
+    let next_tm_east = (tile_map.map_count_y) as i64;
+
+    if tile_idx_x == -1 {
+        return NextTileMapDirection::West;
+    }
+    if tile_idx_x == next_tm_east {
+        return NextTileMapDirection::East;
+    }
+    if tile_idx_y == -1 {
+        return NextTileMapDirection::North;
+    }
+    if tile_idx_y == next_tm_south {
+        return NextTileMapDirection::South;
+    }
+
+    NextTileMapDirection::Stay
+}
+/// # Safety
+///
+/// See game_state_from_memory
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn game_update_and_render(
     memory: *mut GameMemory,
@@ -256,7 +352,9 @@ pub unsafe extern "C" fn game_update_and_render(
     res.is_ok()
 }
 
-/// # Safety: See game_state_from_memory
+/// # Safety
+///
+/// See game_state_from_memory
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn game_audio_render(
     memory: *mut GameMemory,
@@ -287,6 +385,7 @@ unsafe fn game_state_from_memory(memory: &mut GameMemory) -> &mut GameState {
 
         game_state.player_x = 50.0;
         game_state.player_y = 100.0;
+        game_state.tile_map_idx = 0;
         memory.is_initialized = true;
     }
     game_state
