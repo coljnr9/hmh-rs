@@ -124,17 +124,18 @@ pub fn game_update_and_render_internal(
     let mut player_x_delta = 0.0;
     let mut player_y_delta = 0.0;
 
+    let speed_factor = 500.0;
     if game_input.buttons[GameButtonId::Up].ended_down {
-        player_y_delta = -100.0;
+        player_y_delta = -1.0 * speed_factor;
     }
     if game_input.buttons[GameButtonId::Down].ended_down {
-        player_y_delta = 100.0;
+        player_y_delta = 1.0 * speed_factor;
     }
     if game_input.buttons[GameButtonId::Left].ended_down {
-        player_x_delta = -100.0;
+        player_x_delta = -1.0 * speed_factor;
     }
     if game_input.buttons[GameButtonId::Right].ended_down {
-        player_x_delta = 100.0;
+        player_x_delta = 1.0 * speed_factor;
     }
 
     // TODO(coljnr9): bounds checking
@@ -178,7 +179,7 @@ pub fn game_update_and_render_internal(
     };
 
     let tile_maps = [tile_map_00, tile_map_01, tile_map_10, tile_map_11];
-    let mut tile_map = &tile_maps[0];
+    let mut tile_map = &tile_maps[game_state.tile_map_idx];
     draw_rectangle(
         graphics_buffer,
         0.0,
@@ -196,8 +197,8 @@ pub fn game_update_and_render_internal(
     let player_width = 0.5 * tile_width;
     let player_height = 0.75 * tile_height;
 
-    let new_player_x = game_state.player_x + game_input.dt * player_x_delta;
-    let new_player_y = game_state.player_y + game_input.dt * player_y_delta;
+    let mut new_player_x = game_state.player_x + game_input.dt * player_x_delta;
+    let mut new_player_y = game_state.player_y + game_input.dt * player_y_delta;
 
     for y in 0..tile_map.map_count_y {
         for x in 0..tile_map.map_count_x {
@@ -223,27 +224,40 @@ pub fn game_update_and_render_internal(
             );
         }
     }
+    match next_tile_map_dir(new_player_x, new_player_y, &tile_map) {
+        NextTileMapDirection::North => {
+            game_state.tile_map_idx -= 2;
+            new_player_y = tile_map.height;
+        }
+        NextTileMapDirection::South => {
+            game_state.tile_map_idx += 2;
+            new_player_y = 0.0;
+        }
+        NextTileMapDirection::East => {
+            game_state.tile_map_idx += 1;
+            new_player_x = 0.0;
+        }
+        NextTileMapDirection::West => {
+            game_state.tile_map_idx -= 1;
+            new_player_x = tile_map.height;
+        }
+        NextTileMapDirection::Stay => {}
+    };
+
+    tile_map = &tile_maps[game_state.tile_map_idx];
+
     let min_x = new_player_x - player_width / 2.0;
     let min_y = new_player_y - player_height;
 
     let max_x = new_player_x + player_width / 2.0;
     let max_y = new_player_y;
 
-    match next_tile_map_dir(new_player_x, new_player_y, &tile_map) {
-        NextTileMapDirection::North => game_state.tile_map_idx -= 2,
-        NextTileMapDirection::South => game_state.tile_map_idx += 2,
-        NextTileMapDirection::East => game_state.tile_map_idx += 1,
-        NextTileMapDirection::West => game_state.tile_map_idx -= 1,
-        NextTileMapDirection::Stay => {}
-    };
-
-    tile_map = &tile_maps[game_state.tile_map_idx];
-    // if is_tile_map_point_empty(min_x, max_y, &tile_map)
-    //     && is_tile_map_point_empty(max_x, max_y, &tile_map)
-    // {
-    game_state.player_x = new_player_x;
-    game_state.player_y = new_player_y;
-    // }
+    if is_tile_map_point_empty(min_x, max_y, &tile_map)
+        && is_tile_map_point_empty(max_x, max_y, &tile_map)
+    {
+        game_state.player_x = new_player_x;
+        game_state.player_y = new_player_y;
+    }
 
     draw_rectangle(graphics_buffer, min_x, min_y, max_x, max_y, 0.0, 0.0, 1.0);
     Ok(())
@@ -311,10 +325,13 @@ enum NextTileMapDirection {
 fn next_tile_map_dir(test_x: f64, test_y: f64, tile_map: &TileMap) -> NextTileMapDirection {
     let tile_idx_x = (test_x / tile_map.width).floor() as i64;
     let tile_idx_y = (test_y / tile_map.height).floor() as i64;
-    println!("tile_idx_x: {}, tile_idx_y: {}", tile_idx_x, tile_idx_y);
+    println!(
+        "tile_idx_x: {}, tile_idx_y: {}, test_x: {}, test_y: {}",
+        tile_idx_x, tile_idx_y, test_x, test_y
+    );
 
     let next_tm_south = (tile_map.map_count_y) as i64;
-    let next_tm_east = (tile_map.map_count_y) as i64;
+    let next_tm_east = (tile_map.map_count_x) as i64;
 
     if tile_idx_x == -1 {
         return NextTileMapDirection::West;
