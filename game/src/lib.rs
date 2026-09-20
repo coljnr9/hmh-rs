@@ -90,14 +90,13 @@ const SPEED_FACTOR: f64 = 500.0;
 
 #[repr(C)]
 #[derive(Default)]
-pub struct GameState<'a> {
+pub struct GameState {
     x_offset: i64,
     y_offset: i64,
     // Temporarily used to track sine-wave angle between audio calls
     theta: f64,
 
     player_position: PlayerPosition,
-    world: World<'a>,
 }
 
 #[derive(Debug, Default, Copy, Clone)]
@@ -172,7 +171,7 @@ pub fn game_update_and_render_internal(
     game_input: &GameInput,
     _platform_api: &PlatformApi,
 ) -> Result<()> {
-    game_state.world = World {
+    let world = World {
         num_maps_x: WORLD_COUNT_X,
         num_maps_y: WORLD_COUNT_Y,
         tile_width: TILE_WIDTH,
@@ -180,7 +179,7 @@ pub fn game_update_and_render_internal(
         num_map_tiles_x: TILE_MAP_COUNT_X,
         num_map_tiles_y: TILE_MAP_COUNT_Y,
         tile_maps: TILE_MAPS,
-        current_tilemap_idx: 0,
+        current_tilemap_idx: game_state.player_position.tile_map_idx,
     };
     draw_rectangle(
         graphics_buffer,
@@ -193,10 +192,10 @@ pub fn game_update_and_render_internal(
         1.0,
     );
 
-    let map = &game_state.world.tile_maps[game_state.world.current_tilemap_idx];
+    let map = &world.tile_maps[world.current_tilemap_idx];
 
-    for y in 0..game_state.world.num_map_tiles_y {
-        for x in 0..game_state.world.num_map_tiles_x {
+    for y in 0..world.num_map_tiles_y {
+        for x in 0..world.num_map_tiles_x {
             let min_x = x as f64 * TILE_WIDTH;
             let min_y = y as f64 * TILE_HEIGHT;
             let max_x = min_x + TILE_WIDTH;
@@ -245,16 +244,16 @@ pub fn game_update_and_render_internal(
     let max_x = new_player_x + PLAYER_WIDTH / 2.0;
     let max_y = new_player_y;
 
-    let new_position = get_world_position(new_player_x, new_player_y, &game_state.world);
-    let pos0 = get_world_position(min_x, max_y, &game_state.world);
-    let pos1 = get_world_position(max_x, max_y, &game_state.world);
+    let new_position = get_world_position(new_player_x, new_player_y, &world);
+    let pos0 = get_world_position(min_x, max_y, &world);
+    let pos1 = get_world_position(max_x, max_y, &world);
 
-    if is_position_empty(pos0, &game_state.world) && is_position_empty(pos1, &game_state.world) {
-        game_state.world.current_tilemap_idx = new_position.tile_map_idx;
+    if is_position_empty(pos0, &world) && is_position_empty(pos1, &world) {
+        // world.current_tilemap_idx = new_position.tile_map_idx;
         game_state.player_position = new_position;
     }
 
-    draw_rectangle(graphics_buffer, min_x, min_y, max_x, max_y, 0.0, 0.0, 1.0);
+    draw_rectangle(graphics_buffer, min_x, min_y, max_x, max_y, 1.0, 0.0, 1.0);
     Ok(())
 }
 
@@ -367,7 +366,7 @@ pub unsafe extern "C" fn game_audio_render(
 /// 3 zeroed when uninitialized
 ///
 /// 2 and 3 must be enforced by the allocation semantics in the platform layer
-unsafe fn game_state_from_memory(memory: &mut GameMemory) -> &mut GameState<'_> {
+unsafe fn game_state_from_memory(memory: &mut GameMemory) -> &mut GameState {
     // Enforce Safety #1
     assert!(memory.permanent_size >= size_of::<GameState>());
 
@@ -382,17 +381,6 @@ unsafe fn game_state_from_memory(memory: &mut GameMemory) -> &mut GameState<'_> 
             tile_map_idx: 0,
             x: 250.0,
             y: 250.0,
-        };
-
-        game_state.world = World {
-            num_maps_x: WORLD_COUNT_X,
-            num_maps_y: WORLD_COUNT_Y,
-            tile_width: TILE_WIDTH,
-            tile_height: TILE_HEIGHT,
-            num_map_tiles_x: TILE_MAP_COUNT_X,
-            num_map_tiles_y: TILE_MAP_COUNT_Y,
-            tile_maps: TILE_MAPS,
-            current_tilemap_idx: 0,
         };
 
         unsafe { state_ptr.write(game_state) };

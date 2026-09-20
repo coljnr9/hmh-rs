@@ -729,7 +729,7 @@ fn main() -> Result<()> {
 
     // === MAIN LOOP ===
     loop {
-        let _loop_enter = debug_span!("loop").entered();
+        let _loop_enter = debug_span!("main_loop").entered();
         if app.inbox.close {
             break Ok(());
         }
@@ -779,7 +779,8 @@ fn main() -> Result<()> {
             // Require that the game generates all requested samples, never fewer.
             let mut audio_buffer = audio_buffer.to_raw();
             unsafe {
-                (game_code.audio_render)(&mut game_memory, &mut audio_buffer);
+                debug_span!("audio_render")
+                    .in_scope(|| (game_code.audio_render)(&mut game_memory, &mut audio_buffer));
             }
 
             mem.len() / 2
@@ -812,7 +813,7 @@ fn main() -> Result<()> {
 
         // Pacing by compositor
         if !app.inbox.frame_done {
-            debug_span!("dispatch")
+            debug_span!("wayland_blocking_dispatch")
                 .in_scope(|| event_queue.blocking_dispatch(&mut app))
                 .context("Dispatching")?;
             continue;
@@ -877,11 +878,13 @@ fn main() -> Result<()> {
 
         // GameUpdateAndRender
         unsafe {
-            (game_code.update_and_render)(
-                &mut game_memory,
-                &app.controller,
-                &mut graphics_buffer.to_raw(),
-            );
+            debug_span!("update_and_render").in_scope(|| {
+                (game_code.update_and_render)(
+                    &mut game_memory,
+                    &app.controller,
+                    &mut graphics_buffer.to_raw(),
+                )
+            });
         }
 
         app.proxies.wl_surface.frame(qh, ());
