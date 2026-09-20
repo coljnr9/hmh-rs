@@ -9,8 +9,16 @@ use shared::{
 const TILE_MAP_COUNT_X: usize = 13;
 const TILE_MAP_COUNT_Y: usize = 9;
 
-const TILES_00: [[u8; TILE_MAP_COUNT_X]; TILE_MAP_COUNT_Y] = [
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+const WORLD_COUNT_X: usize = 2;
+const WORLD_COUNT_Y: usize = 2;
+
+const TILE_WIDTH: f64 = 100.0;
+const TILE_HEIGHT: f64 = 100.0;
+
+type Tiles = [[u8; TILE_MAP_COUNT_X]; TILE_MAP_COUNT_Y];
+
+const TILES_00: Tiles = [
+    [1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     [0, 1, 1, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0],
     [0, 1, 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0],
     [0, 1, 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0],
@@ -21,7 +29,7 @@ const TILES_00: [[u8; TILE_MAP_COUNT_X]; TILE_MAP_COUNT_Y] = [
     [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
 ];
 
-const TILES_01: [[u8; TILE_MAP_COUNT_X]; TILE_MAP_COUNT_Y] = [
+const TILES_01: Tiles = [
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     [0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0],
@@ -33,7 +41,7 @@ const TILES_01: [[u8; TILE_MAP_COUNT_X]; TILE_MAP_COUNT_Y] = [
     [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
 ];
 
-const TILES_10: [[u8; TILE_MAP_COUNT_X]; TILE_MAP_COUNT_Y] = [
+const TILES_10: Tiles = [
     [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
     [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
     [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
@@ -45,7 +53,7 @@ const TILES_10: [[u8; TILE_MAP_COUNT_X]; TILE_MAP_COUNT_Y] = [
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
 ];
 
-const TILES_11: [[u8; TILE_MAP_COUNT_X]; TILE_MAP_COUNT_Y] = [
+const TILES_11: Tiles = [
     [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
     [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
     [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
@@ -61,17 +69,60 @@ const TILES_11: [[u8; TILE_MAP_COUNT_X]; TILE_MAP_COUNT_Y] = [
 //      [10] [11]
 //
 
+const TILE_MAPS: [TileMap<'static>; WORLD_COUNT_X * WORLD_COUNT_Y] = [
+    TileMap {
+        tiles: TILES_00.as_flattened(),
+    },
+    TileMap {
+        tiles: TILES_01.as_flattened(),
+    },
+    TileMap {
+        tiles: TILES_10.as_flattened(),
+    },
+    TileMap {
+        tiles: TILES_11.as_flattened(),
+    },
+];
+
+const PLAYER_WIDTH: f64 = 0.5 * TILE_WIDTH;
+const PLAYER_HEIGHT: f64 = 0.75 * TILE_HEIGHT;
+const SPEED_FACTOR: f64 = 500.0;
+
 #[repr(C)]
-#[derive(Default, Debug)]
-pub struct GameState {
+#[derive(Default)]
+pub struct GameState<'a> {
     x_offset: i64,
     y_offset: i64,
     // Temporarily used to track sine-wave angle between audio calls
     theta: f64,
 
-    player_x: f64,
-    player_y: f64,
+    player_position: PlayerPosition,
+    world: World<'a>,
+}
+
+#[derive(Debug, Default, Copy, Clone)]
+struct PlayerPosition {
     tile_map_idx: usize,
+    x: f64,
+    y: f64,
+}
+
+#[derive(Default)]
+struct World<'a> {
+    num_maps_x: usize,
+    num_maps_y: usize,
+
+    tile_width: f64,
+    tile_height: f64,
+
+    num_map_tiles_x: usize,
+    num_map_tiles_y: usize,
+
+    tile_maps: [TileMap<'a>; WORLD_COUNT_X * WORLD_COUNT_Y],
+
+    // TODO(coljnr9): The currently visible tilemap idx. Not sure if this _really_ lives in the
+    // world
+    current_tilemap_idx: usize,
 }
 
 fn draw_rectangle(
@@ -121,65 +172,16 @@ pub fn game_update_and_render_internal(
     game_input: &GameInput,
     _platform_api: &PlatformApi,
 ) -> Result<()> {
-    let mut player_x_delta = 0.0;
-    let mut player_y_delta = 0.0;
-
-    let speed_factor = 500.0;
-    if game_input.buttons[GameButtonId::Up].ended_down {
-        player_y_delta = -1.0 * speed_factor;
-    }
-    if game_input.buttons[GameButtonId::Down].ended_down {
-        player_y_delta = 1.0 * speed_factor;
-    }
-    if game_input.buttons[GameButtonId::Left].ended_down {
-        player_x_delta = -1.0 * speed_factor;
-    }
-    if game_input.buttons[GameButtonId::Right].ended_down {
-        player_x_delta = 1.0 * speed_factor;
-    }
-
-    // TODO(coljnr9): bounds checking
-
-    let mut tile_map_00 = TileMap {
-        map_count_x: 13,
-        map_count_y: 9,
-        upper_left_x: 0.0,
-        upper_left_y: 0.0,
-        width: 100.0,
-        height: 100.0,
-        tiles: TILES_00.as_flattened(),
+    game_state.world = World {
+        num_maps_x: WORLD_COUNT_X,
+        num_maps_y: WORLD_COUNT_Y,
+        tile_width: TILE_WIDTH,
+        tile_height: TILE_HEIGHT,
+        num_map_tiles_x: TILE_MAP_COUNT_X,
+        num_map_tiles_y: TILE_MAP_COUNT_Y,
+        tile_maps: TILE_MAPS,
+        current_tilemap_idx: 0,
     };
-
-    let mut tile_map_01 = TileMap {
-        map_count_x: 13,
-        map_count_y: 9,
-        upper_left_x: 0.0,
-        upper_left_y: 0.0,
-        width: 100.0,
-        height: 100.0,
-        tiles: TILES_01.as_flattened(),
-    };
-    let mut tile_map_10 = TileMap {
-        map_count_x: 13,
-        map_count_y: 9,
-        upper_left_x: 0.0,
-        upper_left_y: 0.0,
-        width: 100.0,
-        height: 100.0,
-        tiles: TILES_10.as_flattened(),
-    };
-    let mut tile_map_11 = TileMap {
-        map_count_x: 13,
-        map_count_y: 9,
-        upper_left_x: 0.0,
-        upper_left_y: 0.0,
-        width: 100.0,
-        height: 100.0,
-        tiles: TILES_11.as_flattened(),
-    };
-
-    let tile_maps = [tile_map_00, tile_map_01, tile_map_10, tile_map_11];
-    let mut tile_map = &tile_maps[game_state.tile_map_idx];
     draw_rectangle(
         graphics_buffer,
         0.0,
@@ -191,23 +193,16 @@ pub fn game_update_and_render_internal(
         1.0,
     );
 
-    let tile_width = 100.0;
-    let tile_height = 100.0;
+    let map = &game_state.world.tile_maps[game_state.world.current_tilemap_idx];
 
-    let player_width = 0.5 * tile_width;
-    let player_height = 0.75 * tile_height;
+    for y in 0..game_state.world.num_map_tiles_y {
+        for x in 0..game_state.world.num_map_tiles_x {
+            let min_x = x as f64 * TILE_WIDTH;
+            let min_y = y as f64 * TILE_HEIGHT;
+            let max_x = min_x + TILE_WIDTH;
+            let max_y = min_y + TILE_HEIGHT;
 
-    let mut new_player_x = game_state.player_x + game_input.dt * player_x_delta;
-    let mut new_player_y = game_state.player_y + game_input.dt * player_y_delta;
-
-    for y in 0..tile_map.map_count_y {
-        for x in 0..tile_map.map_count_x {
-            let min_x = x as f64 * tile_width;
-            let min_y = y as f64 * tile_height;
-            let max_x = min_x + tile_width;
-            let max_y = min_y + tile_height;
-
-            let grey = if tile_map.value_at(x as f64, y as f64) > 0 {
+            let grey = if map.value_at(x as f64, y as f64) > 0 {
                 1.0
             } else {
                 0.5
@@ -224,59 +219,70 @@ pub fn game_update_and_render_internal(
             );
         }
     }
-    match next_tile_map_dir(new_player_x, new_player_y, player_width, &tile_map) {
-        NextTileMapDirection::North => {
-            game_state.tile_map_idx -= 2;
-            new_player_y = -1.0
-                + tile_maps[game_state.tile_map_idx].height
-                    * tile_maps[game_state.tile_map_idx].map_count_y as f64;
-        }
-        NextTileMapDirection::South => {
-            game_state.tile_map_idx += 2;
-            new_player_y = 0.0;
-        }
-        NextTileMapDirection::East => {
-            game_state.tile_map_idx += 1;
-            new_player_x = player_width;
-        }
-        NextTileMapDirection::West => {
-            game_state.tile_map_idx -= 1;
-            new_player_x = -player_width
-                + tile_maps[game_state.tile_map_idx].width
-                    * tile_maps[game_state.tile_map_idx].map_count_x as f64;
-        }
-        NextTileMapDirection::Stay => {}
-    };
 
-    tile_map = &tile_maps[game_state.tile_map_idx];
+    let mut player_x_delta = 0.0;
+    let mut player_y_delta = 0.0;
 
-    let min_x = new_player_x - player_width / 2.0;
-    let min_y = new_player_y - player_height;
-
-    let max_x = new_player_x + player_width / 2.0;
-    let max_y = new_player_y;
-
-    if is_tile_map_point_empty(min_x, max_y, &tile_map)
-        && is_tile_map_point_empty(max_x, max_y, &tile_map)
-    {
-        game_state.player_x = new_player_x;
-        game_state.player_y = new_player_y;
+    if game_input.buttons[GameButtonId::Up].ended_down {
+        player_y_delta = -SPEED_FACTOR;
+    }
+    if game_input.buttons[GameButtonId::Down].ended_down {
+        player_y_delta = 1.0 * SPEED_FACTOR;
+    }
+    if game_input.buttons[GameButtonId::Left].ended_down {
+        player_x_delta = -SPEED_FACTOR;
+    }
+    if game_input.buttons[GameButtonId::Right].ended_down {
+        player_x_delta = 1.0 * SPEED_FACTOR;
     }
 
-    dbg!(game_state.player_x, game_state.player_y);
+    let new_player_x = game_state.player_position.x + game_input.dt * player_x_delta;
+    let new_player_y = game_state.player_position.y + game_input.dt * player_y_delta;
+
+    let min_x = new_player_x - PLAYER_WIDTH / 2.0;
+    let min_y = new_player_y - PLAYER_HEIGHT;
+
+    let max_x = new_player_x + PLAYER_WIDTH / 2.0;
+    let max_y = new_player_y;
+
+    let new_position = get_world_position(new_player_x, new_player_y, &game_state.world);
+    let pos0 = get_world_position(min_x, max_y, &game_state.world);
+    let pos1 = get_world_position(max_x, max_y, &game_state.world);
+
+    if is_position_empty(pos0, &game_state.world) && is_position_empty(pos1, &game_state.world) {
+        game_state.world.current_tilemap_idx = new_position.tile_map_idx;
+        game_state.player_position = new_position;
+    }
 
     draw_rectangle(graphics_buffer, min_x, min_y, max_x, max_y, 0.0, 0.0, 1.0);
     Ok(())
 }
 
-struct TileMap<'a> {
-    map_count_x: usize,
-    map_count_y: usize,
-    upper_left_x: f64,
-    upper_left_y: f64,
-    width: f64,
-    height: f64,
+fn get_world_position(test_x: f64, test_y: f64, world: &World) -> PlayerPosition {
+    let mut new_position = PlayerPosition {
+        tile_map_idx: world.current_tilemap_idx,
+        x: test_x,
+        y: test_y,
+    };
+    if test_x < 0.0 {
+        new_position.tile_map_idx -= 1;
+        new_position.x += world.tile_width * world.num_map_tiles_x as f64;
+    } else if test_x >= world.tile_width * world.num_map_tiles_x as f64 {
+        new_position.tile_map_idx += 1;
+        new_position.x -= world.tile_width * world.num_map_tiles_x as f64;
+    } else if test_y < 0.0 {
+        new_position.tile_map_idx -= world.num_maps_x;
+        new_position.y += world.tile_height * world.num_map_tiles_y as f64;
+    } else if test_y >= world.tile_height * world.num_map_tiles_y as f64 {
+        new_position.tile_map_idx += world.num_maps_x;
+        new_position.y -= world.tile_height * world.num_map_tiles_y as f64;
+    };
 
+    new_position
+}
+
+#[derive(Default)]
+struct TileMap<'a> {
     tiles: &'a [u8],
 }
 
@@ -284,18 +290,18 @@ impl<'a> TileMap<'a> {
     fn value_at(&self, x: f64, y: f64) -> u8 {
         let x = x.floor() as usize;
         let y = y.floor() as usize;
-        let row = self.map_count_x * y;
+        let row = TILE_MAP_COUNT_X * y;
         let col = x;
         self.tiles[row + col]
     }
 }
-fn is_tile_map_point_empty(x: f64, y: f64, tile_map: &TileMap) -> bool {
+fn is_position_empty(position: PlayerPosition, world: &World) -> bool {
     let mut is_empty = false;
-    let tile_x = (x / tile_map.width).floor() as usize;
-    let tile_y = (y / tile_map.height).floor() as usize;
-    dbg!(x, y, tile_x, tile_y);
+    let PlayerPosition { x, y, tile_map_idx } = position;
 
-    let tile_map_value = tile_map.value_at(tile_x as f64, tile_y as f64);
+    let tile_x = (x / world.tile_width).floor() as usize;
+    let tile_y = (y / world.tile_height).floor() as usize;
+    let tile_map_value = world.tile_maps[tile_map_idx].value_at(tile_x as f64, tile_y as f64);
     if tile_map_value == 1 {
         is_empty = true;
     }
@@ -309,7 +315,7 @@ pub fn game_audio_render_internal(game_state: &mut GameState, audio_buffer: &mut
         .iter_mut()
         .enumerate()
     {
-        let value = 2000.0
+        let _value = 2000.0
             * (2.0 * consts::PI * 440.0 * (game_state.theta + d_theta as f64)
                 / audio_buffer.sample_rate as f64)
                 .sin();
@@ -319,45 +325,6 @@ pub fn game_audio_render_internal(game_state: &mut GameState, audio_buffer: &mut
     game_state.theta += (audio_buffer.samples_buf.len() / 2) as f64;
 }
 
-#[derive(Debug)]
-enum NextTileMapDirection {
-    North,
-    South,
-    East,
-    West,
-    Stay,
-}
-fn next_tile_map_dir(
-    test_x: f64,
-    test_y: f64,
-    x_width: f64,
-    tile_map: &TileMap,
-) -> NextTileMapDirection {
-    let tile_idx_x_min = ((test_x - x_width / 2.0) / tile_map.width).floor() as i64;
-    let tile_idx_x_max = ((test_x + x_width / 2.0) / tile_map.width).floor() as i64;
-    dbg!(tile_idx_x_min, tile_idx_x_max);
-
-    let tile_idx_y = (test_y / tile_map.height).floor() as i64;
-
-    let next_tm_south = (tile_map.map_count_y) as i64;
-    let next_tm_east = (tile_map.map_count_x) as i64;
-
-    if tile_idx_x_min == -1 {
-        return NextTileMapDirection::West;
-    }
-    if tile_idx_x_max == next_tm_east {
-        dbg!("Moving east");
-        return NextTileMapDirection::East;
-    }
-    if tile_idx_y == -1 {
-        return NextTileMapDirection::North;
-    }
-    if tile_idx_y == next_tm_south {
-        return NextTileMapDirection::South;
-    }
-
-    NextTileMapDirection::Stay
-}
 /// # Safety
 ///
 /// See game_state_from_memory
@@ -400,20 +367,36 @@ pub unsafe extern "C" fn game_audio_render(
 /// 3 zeroed when uninitialized
 ///
 /// 2 and 3 must be enforced by the allocation semantics in the platform layer
-unsafe fn game_state_from_memory(memory: &mut GameMemory) -> &mut GameState {
+unsafe fn game_state_from_memory(memory: &mut GameMemory) -> &mut GameState<'_> {
     // Enforce Safety #1
     assert!(memory.permanent_size >= size_of::<GameState>());
 
-    let game_state = unsafe { &mut *(memory.permanent as *mut GameState) };
+    let state_ptr = memory.permanent as *mut GameState;
     if !memory.is_initialized {
+        let mut game_state = GameState::default();
         game_state.x_offset = 0;
         game_state.y_offset = 0;
         game_state.theta = 0.0;
 
-        game_state.player_x = 250.0;
-        game_state.player_y = 250.0;
-        game_state.tile_map_idx = 0;
+        game_state.player_position = PlayerPosition {
+            tile_map_idx: 0,
+            x: 250.0,
+            y: 250.0,
+        };
+
+        game_state.world = World {
+            num_maps_x: WORLD_COUNT_X,
+            num_maps_y: WORLD_COUNT_Y,
+            tile_width: TILE_WIDTH,
+            tile_height: TILE_HEIGHT,
+            num_map_tiles_x: TILE_MAP_COUNT_X,
+            num_map_tiles_y: TILE_MAP_COUNT_Y,
+            tile_maps: TILE_MAPS,
+            current_tilemap_idx: 0,
+        };
+
+        unsafe { state_ptr.write(game_state) };
         memory.is_initialized = true;
     }
-    game_state
+    unsafe { &mut *state_ptr }
 }

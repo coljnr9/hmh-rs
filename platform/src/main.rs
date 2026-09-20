@@ -769,7 +769,7 @@ fn main() -> Result<()> {
 
         // We ask for desired frames, ALSA determines how much it can handle, then gives me a slice
         // len min(desired_frames, alsa_capacity_frames) * 2.
-        let written_frames = io.mmap(desired_frames, |mem| {
+        let _written_frames = io.mmap(desired_frames, |mem| {
             let _frame_count = mem.len() / 2;
             let audio_buffer = AudioBuffer {
                 samples_buf: mem,
