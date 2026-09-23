@@ -6,7 +6,7 @@ use shared::{
     GraphicsBufferRaw, PlatformApi,
 };
 
-const CHUNK_DIM: usize = 256;
+const CHUNK_DIM: usize = 64;
 
 const TILE_SIDE_IN_METERS: f64 = 1.4;
 const TILE_SIDE_IN_PIXELS: usize = 50;
@@ -14,7 +14,7 @@ const TILE_SIDE_IN_PIXELS: usize = 50;
 const PLAYER_WIDTH: f64 = 0.5 * TILE_SIDE_IN_METERS;
 const PLAYER_HEIGHT: f64 = 0.75 * TILE_SIDE_IN_METERS;
 
-const SPEED_FACTOR: f64 = 8.0; // m/s
+const SPEED_FACTOR: f64 = 20.0; // m/s
 
 #[repr(C)]
 #[derive(Default)]
@@ -52,9 +52,14 @@ impl CannonicalPosition {
         empty
     }
 
-    fn to_meters_chunk_relative(&self) -> (f64, f64) {
-        let x = self.global_x.tile as f64 * TILE_SIDE_IN_METERS + self.tile_rel_x;
-        let y = self.global_y.tile as f64 * TILE_SIDE_IN_METERS + self.tile_rel_y;
+    // I don't think this is chunk relative, it's global?
+    fn to_meters_chunk_relative(self) -> (f64, f64) {
+        let x = self.global_x.chunk as f64 * CHUNK_DIM as f64 * TILE_SIDE_IN_METERS
+            + self.global_x.tile as f64 * TILE_SIDE_IN_METERS
+            + self.tile_rel_x;
+        let y = self.global_y.chunk as f64 * CHUNK_DIM as f64 * TILE_SIDE_IN_METERS
+            + self.global_y.tile as f64 * TILE_SIDE_IN_METERS
+            + self.tile_rel_y;
         (x, y)
     }
 }
@@ -74,7 +79,7 @@ impl Add<(f64, f64)> for CannonicalPosition {
 }
 
 #[derive(Default)]
-struct World<'a> {
+struct World {
     tile_chunk_count_x: i64,
 
     #[allow(unused)]
@@ -83,20 +88,22 @@ struct World<'a> {
     tile_side_in_meters: f64,
     pixels_per_meter: f64,
 
-    chunk_dim: usize,
-
-    tile_chunks: [TileChunk<'a>; 1],
+    tile_chunks: [TileChunk; N_CHUNKS],
 }
 
-impl<'a> World<'a> {
-    fn get_tile_chunk(
-        &self,
-        abs_tile_x: TileCoord,
-        abs_tile_y: TileCoord,
-    ) -> Option<&TileChunk<'a>> {
-        let idx = abs_tile_y.chunk * self.tile_chunk_count_y + abs_tile_x.chunk;
+impl World {
+    fn get_tile_chunk(&self, abs_tile_x: TileCoord, abs_tile_y: TileCoord) -> Option<&TileChunk> {
+        let valid_range = 0..OUTPUT_DIM as i64;
+        let all_valid =
+            valid_range.contains(&abs_tile_x.chunk) && valid_range.contains(&abs_tile_y.chunk);
+        if !all_valid {
+            return None;
+        }
 
-        assert!(idx >= 0);
+        // Guaranteed to be valid given the check above.  tile_chunks has size OUTPUT_DIM *
+        // OUTPUT_DIM
+        let idx = abs_tile_y.chunk * self.tile_chunk_count_x + abs_tile_x.chunk;
+
         Some(&self.tile_chunks[idx as usize])
     }
 }
@@ -117,16 +124,16 @@ fn draw_rectangle_pixels(
 
     let min_x = min_x
         .clamp(0.0, graphics_buffer.width_pixels as f64)
-        .floor() as usize;
+        .round() as usize;
     let max_x = max_x
         .clamp(0.0, graphics_buffer.width_pixels as f64)
-        .floor() as usize;
+        .round() as usize;
     let min_y = min_y
         .clamp(0.0, graphics_buffer.height_pixels as f64)
-        .floor() as usize;
+        .round() as usize;
     let max_y = max_y
         .clamp(0.0, graphics_buffer.height_pixels as f64)
-        .floor() as usize;
+        .round() as usize;
 
     let rows = &mut bytemuck::cast_slice_mut::<u8, u32>(graphics_buffer.pixels)
         [min_y * graphics_buffer.pitch_pixels..(max_y) * graphics_buffer.pitch_pixels]
@@ -144,22 +151,50 @@ fn draw_rectangle_pixels(
     }
 }
 
+const OUTPUT_DIM: usize = MAP_H / CHUNK_DIM;
+const N_CHUNKS: usize = (MAP_W * MAP_H) / (CHUNK_DIM * CHUNK_DIM);
 pub fn game_update_and_render_internal(
     game_state: &mut GameState,
     graphics_buffer: &mut GraphicsBuffer,
     game_input: &GameInput,
     _platform_api: &PlatformApi,
 ) -> Result<()> {
-    let tiles = TileChunk {
-        tiles: &TILEMAP.as_flattened(),
-    };
+    let mut tile_chunks = [TileChunk {
+        tiles: [0u8; CHUNK_DIM * CHUNK_DIM],
+    }; N_CHUNKS];
+
+    let mut all_chunks = [[0u8; CHUNK_DIM * CHUNK_DIM]; N_CHUNKS];
+    let mut chunk_idx = 0;
+
+    // 2d-array to chunks
+    for r_i in 0..OUTPUT_DIM {
+        for c_i in 0..OUTPUT_DIM {
+            let c_start = c_i * CHUNK_DIM;
+            let c_end = (c_i + 1) * CHUNK_DIM;
+
+            let r_start = r_i * CHUNK_DIM;
+            let r_end = (r_i + 1) * CHUNK_DIM;
+
+            for r in r_start..r_end {
+                for c in c_start..c_end {
+                    let v = TILEMAP[r][c];
+                    let idx = (r - r_start) * CHUNK_DIM + (c - c_start);
+                    all_chunks[chunk_idx][idx] = v;
+                }
+            }
+            tile_chunks[chunk_idx] = TileChunk {
+                tiles: all_chunks[chunk_idx],
+            };
+            chunk_idx += 1;
+        }
+    }
+
     let world = World {
-        tile_chunk_count_x: 1,
-        tile_chunk_count_y: 1,
+        tile_chunk_count_x: OUTPUT_DIM as i64,
+        tile_chunk_count_y: OUTPUT_DIM as i64,
         tile_side_in_meters: TILE_SIDE_IN_METERS,
         pixels_per_meter: TILE_SIDE_IN_PIXELS as f64 / TILE_SIDE_IN_METERS,
-        chunk_dim: CHUNK_DIM,
-        tile_chunks: [tiles],
+        tile_chunks,
     };
     draw_rectangle_pixels(
         graphics_buffer,
@@ -172,25 +207,51 @@ pub fn game_update_and_render_internal(
         1.0,
     );
 
-    let tile_chunk = world
-        .get_tile_chunk(
-            game_state.player_position.global_x,
-            game_state.player_position.global_y,
-        )
-        .unwrap();
+    let x_start = game_state.player_position.global_x + -15;
+    let x_end = game_state.player_position.global_x + 15;
 
-    for y in 0..9 {
-        for x in 0..17 {
-            let min_x = x as f64 * world.tile_side_in_meters;
-            let min_y = y as f64 * world.tile_side_in_meters;
-            let max_x = min_x + world.tile_side_in_meters;
-            let max_y = min_y + world.tile_side_in_meters;
+    let y_start = game_state.player_position.global_y + -15;
+    let y_end = game_state.player_position.global_y + 15;
 
-            let grey = if tile_chunk.value_at(x as i64, y as i64) > 0 {
+    let x_start = cannonicalize_coordinate(x_start, 0.0, &world).0;
+    let y_start = cannonicalize_coordinate(y_start, 0.0, &world).0;
+
+    let x_end = cannonicalize_coordinate(x_end, 0.0, &world).0;
+    let y_end = cannonicalize_coordinate(y_end, 0.0, &world).0;
+
+    dbg!(x_start, x_end, y_start, y_end);
+    for y in -15..15 {
+        for x in -15..15 {
+            let x_coord_ =
+                cannonicalize_coordinate(game_state.player_position.global_x + x, 0.0, &world).0;
+            let y_coord_ =
+                cannonicalize_coordinate(game_state.player_position.global_y + y, 0.0, &world).0;
+
+            let tile_chunk = match world.get_tile_chunk(x_coord_, y_coord_) {
+                Some(t) => t,
+                None => continue,
+            };
+
+            let grey = if tile_chunk.value_at(x_coord_.tile, y_coord_.tile) > 0 {
                 1.0
             } else {
                 0.5
             };
+
+            let upper_corner = CannonicalPosition {
+                global_x: x_coord_,
+                global_y: y_coord_,
+                tile_rel_x: 0.0,
+                tile_rel_y: 0.0,
+            };
+
+            let (x, y) = upper_corner.to_meters_chunk_relative();
+
+            let min_x = x;
+            let min_y = y;
+            let max_x = x + world.tile_side_in_meters;
+            let max_y = y + world.tile_side_in_meters;
+
             draw_rectangle_pixels(
                 graphics_buffer,
                 min_x * world.pixels_per_meter,
@@ -227,7 +288,7 @@ pub fn game_update_and_render_internal(
         );
 
     let mut left = new_position;
-    left.tile_rel_x -= (PLAYER_WIDTH / 2.0);
+    left.tile_rel_x -= PLAYER_WIDTH / 2.0;
 
     let mut right = new_position;
     right.tile_rel_x += PLAYER_WIDTH / 2.0;
@@ -256,13 +317,6 @@ pub fn game_update_and_render_internal(
     Ok(())
 }
 
-struct TileChunkPosition {
-    tile_chunk_x: i64,
-    tile_chunk_y: i64,
-    tile_x: i64,
-    tile_y: i64,
-}
-
 #[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
 struct TileCoord {
     chunk: i64,
@@ -274,6 +328,7 @@ impl Add<i64> for TileCoord {
 
     fn add(self, rhs: i64) -> Self::Output {
         let total = self.tile + rhs;
+
         Self {
             chunk: self.chunk + total.div_euclid(CHUNK_DIM as i64),
             tile: total.rem_euclid(CHUNK_DIM as i64),
@@ -283,11 +338,18 @@ impl Add<i64> for TileCoord {
 
 fn cannonicalize_coordinate(coord: TileCoord, tile_rel: f64, world: &World) -> (TileCoord, f64) {
     let offset = (tile_rel / world.tile_side_in_meters).floor() as i64;
+    let tile_coord = coord + offset;
 
-    (
-        coord + offset,
-        tile_rel - offset as f64 * world.tile_side_in_meters,
-    )
+    let rem = tile_rel - offset as f64 * world.tile_side_in_meters;
+
+    assert!(tile_coord.tile >= 0);
+    assert!(tile_coord.tile < CHUNK_DIM as i64);
+    // assert!(tile_coord.chunk >= 0);
+    // assert!(tile_coord.chunk < OUTPUT_DIM as i64);
+
+    assert!(rem >= 0.0);
+    assert!(rem <= TILE_SIDE_IN_METERS);
+    (tile_coord, rem)
 }
 
 fn cannonicalize_position(position: CannonicalPosition, world: &World) -> CannonicalPosition {
@@ -304,15 +366,24 @@ fn cannonicalize_position(position: CannonicalPosition, world: &World) -> Cannon
     }
 }
 
-#[derive(Default)]
-struct TileChunk<'a> {
-    tiles: &'a [u8],
+#[derive(Copy, Clone)]
+struct TileChunk {
+    tiles: [u8; CHUNK_DIM * CHUNK_DIM],
 }
 
-impl<'a> TileChunk<'a> {
+impl Default for TileChunk {
+    fn default() -> Self {
+        Self {
+            tiles: [0u8; CHUNK_DIM * CHUNK_DIM],
+        }
+    }
+}
+
+impl TileChunk {
     fn value_at(&self, x: i64, y: i64) -> u8 {
         let row = CHUNK_DIM as i64 * y;
         let col = x;
+
         self.tiles[(row + col) as usize]
     }
 }
@@ -387,10 +458,10 @@ unsafe fn game_state_from_memory(memory: &mut GameMemory) -> &mut GameState {
             y_offset: 0,
             theta: 0.0,
             player_position: CannonicalPosition {
-                tile_rel_x: 0.7,
-                tile_rel_y: 0.7,
-                global_x: TileCoord { chunk: 0, tile: 2 },
-                global_y: TileCoord { chunk: 0, tile: 4 },
+                tile_rel_x: 1.0,
+                tile_rel_y: 1.0,
+                global_x: TileCoord { chunk: 0, tile: 1 },
+                global_y: TileCoord { chunk: 0, tile: 1 },
             },
         };
 
@@ -403,7 +474,8 @@ unsafe fn game_state_from_memory(memory: &mut GameMemory) -> &mut GameState {
 pub const MAP_W: usize = 256;
 pub const MAP_H: usize = 256;
 
-pub const TILEMAP: [[u8; MAP_W]; MAP_H] = generate();
+pub static TILEMAP: [[u8; MAP_W]; MAP_H] = generate_simple();
+// pub static TILEMAP: [[u8; MAP_W]; MAP_H] = generate();
 
 const fn generate() -> [[u8; MAP_W]; MAP_H] {
     let mut map = [[0u8; MAP_W]; MAP_H];
@@ -417,12 +489,28 @@ const fn generate() -> [[u8; MAP_W]; MAP_H] {
             seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
 
             let border = x == 0 || y == 0 || x == MAP_W - 1 || y == MAP_H - 1;
-            let wall = (seed >> 24) < 64; // top byte < 64 → ~25% chance
+            let wall = (seed >> 22) < 64; // top byte < 64 → ~25% chance
 
             map[y][x] = (border || wall) as u8;
             x += 1;
         }
         y += 1;
+    }
+    map
+}
+
+const fn generate_simple() -> [[u8; MAP_W]; MAP_H] {
+    let mut map = [[0u8; MAP_W]; MAP_H];
+
+    let mut chunk_y = 0;
+    while chunk_y < OUTPUT_DIM {
+        let mut chunk_x = 0;
+        while chunk_x < OUTPUT_DIM {
+            map[chunk_y * CHUNK_DIM + chunk_y][chunk_x * CHUNK_DIM + chunk_x] = 1;
+            map[chunk_y * CHUNK_DIM][chunk_x * CHUNK_DIM] = 1;
+            chunk_x += 1;
+        }
+        chunk_y += 1;
     }
     map
 }
